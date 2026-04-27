@@ -21,13 +21,12 @@ The SDK is also the AGPL/non-AGPL **license boundary**. The platform core ships 
 
 [AGPL-3.0](LICENSE) for the SDK itself. Tenant project code authored against this SDK uses whatever license the tenant chooses, subject to the boundary validation noted above.
 
-## Contributing
+## Governance & policies
 
-See [`CONTRIBUTING.md`](https://github.com/auspexai/.github/blob/main/CONTRIBUTING.md) (org-wide). The Tenant SDK is a stable surface; backwards-incompatible changes go through a deprecation cycle and require RFC.
-
-## Governance
-
-Project direction is held by the Maintainer team per [`GOVERNANCE.md`](https://github.com/auspexai/.github/blob/main/GOVERNANCE.md). Code of Conduct: [`CODE_OF_CONDUCT.md`](https://github.com/auspexai/.github/blob/main/CODE_OF_CONDUCT.md).
+- [Governance](https://github.com/auspexai/.github/blob/main/GOVERNANCE.md) — roles, decision rules, recruitment, conflict of interest
+- [Code of Conduct](https://github.com/auspexai/.github/blob/main/CODE_OF_CONDUCT.md) — community standards, reporting, escalation pathway
+- [Contributing](https://github.com/auspexai/.github/blob/main/CONTRIBUTING.md) — DCO sign-off, PR workflow, RFC requirement for substantial architectural changes
+- [Research Ethics Policy](https://github.com/auspexai/.github/blob/main/RESEARCH_ETHICS_POLICY.md) — what AI safety research can run on the network and how it's reviewed
 
 ## Watch this repo
 
