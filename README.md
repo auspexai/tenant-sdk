@@ -1,5 +1,7 @@
 # AuspexAI Tenant SDK
 
+[![CI](https://github.com/auspexai/tenant-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/auspexai/tenant-sdk/actions/workflows/ci.yml)
+
 The developer surface for authoring research tenants that run on the [AuspexAI](https://github.com/auspexai) network.
 
 ## Status
