@@ -1,0 +1,18 @@
+; AuspexAI Work Unit Envelope, v0.1
+;
+; The work-unit envelope wraps a tenant-defined payload with a stable
+; platform-readable header. The payload is opaque to the AuspexAI platform
+; (Principles §5.1 tenant-neutral core). Workers deliver the work unit to the
+; tenant executor across the sandbox boundary (Principles §5.17).
+;
+; Per Principles & Scope §11, this file is immutable once published.
+
+workunit = {
+  schema_version: "0.1",
+  unit_id: tstr,
+  tenant_id: tstr,
+  experiment_id: tstr,
+  manifest_sha256: tstr .regexp "^[a-f0-9]{64}$",
+  created_at: tstr,                              ; ISO 8601
+  payload: { * tstr => any },                    ; tenant-defined, opaque to platform
+}

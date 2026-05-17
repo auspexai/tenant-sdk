@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://auspexai.network/schemas/workunit/v0.1",
+  "title": "AuspexAI Work Unit Envelope v0.1",
+  "description": "Work-unit envelope schema. The payload field is tenant-defined and opaque to the AuspexAI platform (Principles §5.1 tenant-neutral core). Immutable once published.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "unit_id",
+    "tenant_id",
+    "experiment_id",
+    "manifest_sha256",
+    "created_at",
+    "payload"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "0.1"
+    },
+    "unit_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_-]{1,128}$"
+    },
+    "tenant_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{2,63}$"
+    },
+    "experiment_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{2,127}$"
+    },
+    "manifest_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "Content-address of the manifest this work unit is bound to. Manifest-swap protection (Principles §5.14)."
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "type": "object",
+      "description": "Tenant-defined work-unit content. Opaque to the AuspexAI platform."
+    }
+  }
+}

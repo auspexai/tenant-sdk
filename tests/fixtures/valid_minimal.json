@@ -1,0 +1,28 @@
+{
+  "schema_version": "0.1",
+  "tenant_id": "sentinel",
+  "tenant_maintainer_contact": "sentinel-maintainers@auspexai.network",
+  "experiment_id": "sentinel-test-minimal",
+  "research_goal_paragraph": "A worked-example minimal manifest used to validate that the AuspexAI tenant SDK's manifest schema accepts a syntactically valid v0.1 document with all required fields and no sensitive-content flags.",
+  "models": [
+    {
+      "id": "llama-3.1-8b-instruct",
+      "version": "abc123",
+      "local_weights_required": true
+    }
+  ],
+  "prompt_set_characteristics": "Sentinel probe library v0; ~100 test probes.",
+  "sensitive_content_flags": [],
+  "expected_duration_hours": 24,
+  "replication_factor": 3,
+  "work_unit_source": {
+    "kind": "static",
+    "tarball_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  },
+  "executor": {
+    "command": ["./sentinel-executor"]
+  },
+  "reducer": {
+    "kind": "builtin_hash_agreement"
+  }
+}

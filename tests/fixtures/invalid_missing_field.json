@@ -1,0 +1,19 @@
+{
+  "schema_version": "0.1",
+  "tenant_maintainer_contact": "test@example.com",
+  "experiment_id": "test-experiment",
+  "research_goal_paragraph": "An invalid manifest used in tests — this one is missing the required tenant_id field to verify schema rejection.",
+  "models": [
+    {"id": "test", "version": "1", "local_weights_required": false}
+  ],
+  "prompt_set_characteristics": "test prompt set characteristics",
+  "sensitive_content_flags": [],
+  "expected_duration_hours": 1,
+  "replication_factor": 1,
+  "work_unit_source": {
+    "kind": "static",
+    "tarball_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "executor": {"command": ["./x"]},
+  "reducer": {"kind": "builtin_hash_agreement"}
+}

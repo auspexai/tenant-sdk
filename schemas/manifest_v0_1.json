@@ -1,0 +1,202 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://auspexai.network/schemas/manifest/v0.1",
+  "title": "AuspexAI Tenant Manifest v0.1",
+  "description": "Published manifest schema for AuspexAI tenant experiments. Mirrors the normative CDDL definition in cddl/manifest_v0_1.cddl. Per the schema-versioning policy (Principles & Scope §11 Q20), this file is immutable once published; major version bumps require an ADR.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "tenant_id",
+    "tenant_maintainer_contact",
+    "experiment_id",
+    "research_goal_paragraph",
+    "models",
+    "prompt_set_characteristics",
+    "sensitive_content_flags",
+    "expected_duration_hours",
+    "replication_factor",
+    "work_unit_source",
+    "executor",
+    "reducer"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "0.1"
+    },
+    "tenant_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{2,63}$",
+      "description": "Lowercase slug, 3-64 chars, starts with a letter."
+    },
+    "tenant_maintainer_contact": {
+      "type": "string",
+      "format": "email"
+    },
+    "experiment_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{2,127}$"
+    },
+    "research_goal_paragraph": {
+      "type": "string",
+      "minLength": 50,
+      "maxLength": 2000,
+      "description": "One-paragraph volunteer-readable research goal (Principles §5.14)."
+    },
+    "models": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "version", "local_weights_required"],
+        "properties": {
+          "id": { "type": "string" },
+          "version": { "type": "string" },
+          "local_weights_required": { "type": "boolean" }
+        }
+      }
+    },
+    "prompt_set_characteristics": {
+      "type": "string",
+      "minLength": 10,
+      "maxLength": 1000,
+      "description": "High-level description only, not the literal prompts (Principles §5.14)."
+    },
+    "sensitive_content_flags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["dual_use", "red_team", "harmful_output_generation"]
+      },
+      "uniqueItems": true,
+      "description": "Per Principles §5.12 research ethics. If any flag is set, approver_attestations is required."
+    },
+    "approver_attestations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["approver_pubkey", "sig"],
+        "properties": {
+          "approver_pubkey": {
+            "type": "string",
+            "pattern": "^ed25519:[A-Za-z0-9+/=]+$"
+          },
+          "sig": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9+/=]+$"
+          }
+        }
+      }
+    },
+    "expected_duration_hours": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "maximum": 8760,
+      "description": "Expected wall-clock duration of the experiment, in hours."
+    },
+    "replication_factor": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+    },
+    "work_unit_source": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "tarball_sha256"],
+          "properties": {
+            "kind": { "const": "static" },
+            "tarball_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "url"],
+          "properties": {
+            "kind": { "const": "http" },
+            "url": {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https://"
+            }
+          }
+        }
+      ]
+    },
+    "executor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command"],
+      "properties": {
+        "command": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" }
+        },
+        "image_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "reducer": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": { "const": "builtin_hash_agreement" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "command"],
+          "properties": {
+            "kind": { "const": "custom" },
+            "command": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "string" }
+            },
+            "image_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "sensitive_content_flags": {
+            "type": "array",
+            "minItems": 1
+          }
+        },
+        "required": ["sensitive_content_flags"]
+      },
+      "then": {
+        "required": ["approver_attestations"],
+        "properties": {
+          "approver_attestations": {
+            "type": "array",
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ]
+}

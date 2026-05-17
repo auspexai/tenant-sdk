@@ -1,0 +1,18 @@
+; AuspexAI Result Envelope, v0.1
+;
+; The result envelope wraps a tenant-defined result payload with a worker
+; signature over the canonical encoding of the other fields. Workers produce
+; results inside the sandbox subprocess; the daemon (which holds the keystore)
+; signs at submission time (Principles §5.17 two-tier process model).
+;
+; Per Principles & Scope §11, this file is immutable once published.
+
+result = {
+  schema_version: "0.1",
+  unit_id: tstr,
+  worker_pubkey: tstr .regexp "^[a-f0-9]{64}$",  ; Ed25519 raw, hex-encoded
+  completed_at: tstr,                             ; ISO 8601
+  exit_code: int,
+  payload: { * tstr => any },                     ; tenant-defined, opaque
+  worker_signature: tstr,                         ; base64 Ed25519 sig over canonical encoding
+}

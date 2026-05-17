@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://auspexai.network/schemas/result/v0.1",
+  "title": "AuspexAI Result Envelope v0.1",
+  "description": "Result-envelope schema. The payload field is tenant-defined and opaque to the AuspexAI platform. worker_signature is added at submission time by the worker (Ed25519 signature over the canonical encoding of the other fields). Immutable once published.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "unit_id",
+    "worker_pubkey",
+    "completed_at",
+    "exit_code",
+    "payload",
+    "worker_signature"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "0.1"
+    },
+    "unit_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_-]{1,128}$"
+    },
+    "worker_pubkey": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "Raw Ed25519 public key (32 bytes), lowercase hex-encoded."
+    },
+    "completed_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "exit_code": {
+      "type": "integer",
+      "minimum": -255,
+      "maximum": 255
+    },
+    "payload": {
+      "type": "object",
+      "description": "Tenant-defined result content. Opaque to the AuspexAI platform."
+    },
+    "worker_signature": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9+/=]+$",
+      "description": "Base64-encoded Ed25519 signature over canonical JSON encoding of the other fields."
+    }
+  }
+}

@@ -1,0 +1,39 @@
+; AuspexAI Contribution Receipt v0.1
+;
+; Receipts are CBOR-encoded, COSE-signed, embedded as the predicate body of an
+; in-toto v1 Statement with predicate type "https://auspexai.network/receipt/v0".
+; The Statement is recorded in Rekor for transparency (Principles §5.16).
+;
+; This file describes the predicate body only — the in-toto Statement envelope
+; and COSE signature wrapping are external standards (RFC 9052 for COSE, the
+; in-toto v1 spec for Statement).
+;
+; Severable PII pattern (Principles §5.15): the binding from worker_pubkey to a
+; GitHub identity lives in coordinator state, not in the receipt content.
+; Severing the binding leaves the receipt unattributed but does not destroy it.
+;
+; Per Principles & Scope §11, this file is immutable once published. Major
+; version bumps require an ADR; coordinator parser code grows monotonically
+; as the cost of "a 10-year-old receipt remains verifiable on current software."
+
+receipt = {
+  version: "0.1",
+  tenant_id: tstr,
+  experiment_id: tstr,
+  worker_pubkey: bytes .size 32,                  ; raw Ed25519 public key (32 bytes)
+  work_unit_ids: [+ tstr],                        ; one or more work units this receipt covers
+  time_window: {
+    start: tstr,                                  ; ISO 8601
+    end: tstr,                                    ; ISO 8601
+  },
+  quorum_agreement: {
+    replication_factor: uint .gt 0,
+    agreeing_workers: uint .gt 0,
+    method: tstr,                                 ; e.g. "builtin_hash_agreement" or "custom:<name>"
+  },
+  result_hash_anchors: [+ {
+    rekor_log_index: uint,
+    rekor_entry_uuid: tstr,
+    result_sha256: tstr .regexp "^[a-f0-9]{64}$",
+  }],
+}

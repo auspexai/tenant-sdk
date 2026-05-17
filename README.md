@@ -15,11 +15,13 @@ The Tenant SDK is the contract between tenant project modules (research code) an
 - How a tenant defines its result schema and analysis pipeline
 - How a tenant integrates with platform storage, scheduling, and trust layers
 
-The SDK is also the AGPL/non-AGPL **license boundary**. The platform core ships under AGPL-3.0; tenant project modules consuming the SDK's stable surface are not themselves required to be AGPL-3.0. Tenant license is the Researcher's choice — see [`CONTRIBUTING.md`](https://github.com/auspexai/.github/blob/main/CONTRIBUTING.md) Path 2 and the AuspexAI Principles & Scope §5.2 for the boundary design constraint. Counsel review in Phase 1 will validate; until then, treat the AGPL non-infection of tenant code as a working assumption rather than a final guarantee.
+The SDK is intentionally a thin client over a published data + subprocess contract. Tenants consume the SDK's stable surface (or implement the published contract independently); the AGPL-3.0 platform (`auspexai/platform`, `auspexai/worker`, `auspexai/coordinator`) runs on the other side of that contract. Tenant project modules authoring against the SDK are not derivative works of the AGPL platform — see the AuspexAI Principles & Scope §5.2 and `Documentation/AuspexAI/v0.1.0/sdk_license_boundary_position.md` for the structural argument and the comparator survey (MongoDB, Grafana, Nextcloud, Mastodon).
 
 ## License
 
-[AGPL-3.0](LICENSE) for the SDK itself. Tenant project code authored against this SDK uses whatever license the tenant chooses, subject to the boundary validation noted above.
+[Apache-2.0](LICENSE) for the SDK. Tenants are free to license their own tenant project code under whatever license suits their research — Sentinel ships under Apache-2.0; future tenants choose their own.
+
+The AuspexAI **platform** (separate repos: `auspexai/platform`, `auspexai/worker`, `auspexai/coordinator`) is AGPL-3.0. The SDK/platform license split follows the published-contract pattern used by MongoDB drivers, Grafana plugins, and Sentry SDKs — copyleft on the server, permissive on the SDK.
 
 ## Governance & policies
 

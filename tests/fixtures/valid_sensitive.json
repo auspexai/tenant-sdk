@@ -1,0 +1,34 @@
+{
+  "schema_version": "0.1",
+  "tenant_id": "sentinel",
+  "tenant_maintainer_contact": "sentinel-maintainers@auspexai.network",
+  "experiment_id": "sentinel-red-team-2026q3",
+  "research_goal_paragraph": "A worked-example sensitive-content manifest with dual_use and red_team flags set, plus approver_attestations to satisfy the conditional requirement in Principles §5.12 research ethics. Volunteers see this experiment behind the per-experiment opt-in gate.",
+  "models": [
+    {
+      "id": "llama-3.1-8b-instruct",
+      "version": "abc123",
+      "local_weights_required": true
+    }
+  ],
+  "prompt_set_characteristics": "Adversarial probe library v0; dual-use red-team scenarios for behavioral-drift study.",
+  "sensitive_content_flags": ["dual_use", "red_team"],
+  "approver_attestations": [
+    {
+      "approver_pubkey": "ed25519:MCowBQYDK2VwAyEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      "sig": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    }
+  ],
+  "expected_duration_hours": 168,
+  "replication_factor": 3,
+  "work_unit_source": {
+    "kind": "static",
+    "tarball_sha256": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+  },
+  "executor": {
+    "command": ["./sentinel-executor", "--red-team-mode"]
+  },
+  "reducer": {
+    "kind": "builtin_hash_agreement"
+  }
+}
