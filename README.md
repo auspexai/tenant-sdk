@@ -6,7 +6,18 @@ The developer surface for authoring research tenants that run on the [AuspexAI](
 
 ## Status
 
-**Phase 0 — Foundation.** SDK design and code begin in Phase 1, alongside the [platform](https://github.com/auspexai/platform).
+**Phase 1 — v0.1 SDK in active development.** Foundational milestones shipped (as of 2026-05-17):
+
+- Published wire-format contracts (JSON Schema + CDDL) for manifest, manifest-signature, workunit, executor-output, result, reducer-decision, and receipt — all immutable per the schema-versioning policy
+- Pydantic models with strict validation for every wire format
+- `ExecutorHarness` and `ReducerHarness` for tenant-supplied executor / reducer scripts
+- Maintainer keypair (Ed25519 PKCS8 PEM) + manifest signing + verification + `httpx`-based upload
+- CBOR receipt encode/decode + `auspexai-tenant receipts show` CLI
+- Static work-unit packing (`tar_writer` / `tar_reader`)
+- Synthetic test tenant at `examples/synthetic_tenant/` (non-LLM integer-doubler — the §5.3 forcing function)
+- 99 tests passing, CI green on Python 3.11 + 3.12
+
+The coordinator HTTP API (separate repo, not yet built) is what the SDK's `manifest upload` command will eventually target; for now the upload path is tested against mocks. See `Documentation/AuspexAI/v0.1.0/` (in the canonical design tree) for the full Phase 1 design.
 
 ## Scope
 
