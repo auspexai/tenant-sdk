@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://auspexai.network/schemas/executor_output/v0.1",
+  "title": "AuspexAI Executor Output v0.1",
+  "description": "What a tenant executor writes to its --output path. The worker daemon (which holds the keystore) reads this, adds worker_pubkey + worker_signature, and submits the full Result to the coordinator. Distinct from the Result envelope (result_v0_1.json) — this is the executor → worker handoff format. Tenant authors writing executors in any language (Python, Rust, Go, shell) target this schema; the worker validates against it before constructing the full Result.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "unit_id",
+    "completed_at",
+    "exit_code",
+    "payload"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "0.1"
+    },
+    "unit_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_-]{1,128}$",
+      "description": "Matches the unit_id of the work unit this output is for. The worker verifies this match before constructing the Result."
+    },
+    "completed_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the executor finished. The worker may use this for log correlation; the coordinator uses the worker's submission time for time-window metadata in receipts."
+    },
+    "exit_code": {
+      "type": "integer",
+      "minimum": -255,
+      "maximum": 255,
+      "description": "Tenant-defined exit code. 0 indicates the work itself succeeded; non-zero indicates the work failed in a tenant-meaningful way (e.g., model output failed a sanity check). Distinct from the executor *process* exit code, which signals whether the harness itself ran (process exit 1 = tenant code raised; process exit 2 = harness/IO error)."
+    },
+    "payload": {
+      "type": "object",
+      "description": "Tenant-defined result content. Opaque to the AuspexAI platform; the tenant's reducer (if any) and downstream analysis pipeline are the only consumers."
+    }
+  }
+}

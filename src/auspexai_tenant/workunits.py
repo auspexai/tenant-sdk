@@ -33,6 +33,29 @@ class WorkUnit(BaseModel):
     payload: dict[str, Any]
 
 
+class ExecutorOutput(BaseModel):
+    """What a tenant executor writes to its --output path.
+
+    The executor-to-worker handoff format. The worker daemon reads this,
+    verifies the unit_id matches the work-unit it dispatched, adds
+    worker_pubkey + worker_signature, and submits the full Result to the
+    coordinator. Distinct from Result (which carries the worker's signature
+    over the canonical encoding).
+
+    Tenant authors writing executors in any language target this schema;
+    the Python ExecutorHarness in auspexai_tenant.executor wraps the
+    CLI/IO boilerplate for tenants who choose Python.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["0.1"]
+    unit_id: Annotated[str, Field(pattern=r"^[a-zA-Z0-9_-]{1,128}$")]
+    completed_at: datetime
+    exit_code: Annotated[int, Field(ge=-255, le=255)]
+    payload: dict[str, Any]
+
+
 class Result(BaseModel):
     """A result submitted by a worker for a given work unit.
 

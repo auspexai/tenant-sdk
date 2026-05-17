@@ -8,6 +8,7 @@ not a derivative work of the AGPL platform — the boundary is the published
 data + subprocess contract, not the SDK's own license.
 """
 
+from auspexai_tenant.executor import ExecutorFn, ExecutorHarness
 from auspexai_tenant.manifest import (
     ApproverAttestation,
     BuiltinReducer,
@@ -21,7 +22,7 @@ from auspexai_tenant.manifest import (
     StaticWorkUnitSource,
     WorkUnitSource,
 )
-from auspexai_tenant.workunits import Result, WorkUnit
+from auspexai_tenant.workunits import ExecutorOutput, Result, WorkUnit
 
 __version__ = "0.1.0"
 
@@ -30,6 +31,9 @@ __all__ = [
     "BuiltinReducer",
     "CustomReducer",
     "Executor",
+    "ExecutorFn",
+    "ExecutorHarness",
+    "ExecutorOutput",
     "HttpWorkUnitSource",
     "Manifest",
     "Model",

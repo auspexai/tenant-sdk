@@ -1,0 +1,21 @@
+; AuspexAI Executor Output, v0.1
+;
+; What a tenant executor writes to its --output path. The worker daemon
+; (which holds the keystore) reads this, adds worker_pubkey +
+; worker_signature, and submits the full Result envelope (result_v0_1.cddl)
+; to the coordinator.
+;
+; This is the executor-to-worker handoff format, distinct from the
+; worker-to-coordinator Result format. Tenant authors writing executors in
+; any language (Python via the SDK harness, Rust, Go, shell, etc.) target
+; this schema.
+;
+; Per Principles & Scope §11, this file is immutable once published.
+
+executor_output = {
+  schema_version: "0.1",
+  unit_id: tstr,
+  completed_at: tstr,                    ; ISO 8601
+  exit_code: int,                        ; tenant-defined; 0 = success
+  payload: { * tstr => any },            ; tenant-defined, opaque to platform
+}
