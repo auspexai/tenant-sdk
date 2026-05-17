@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://auspexai.network/schemas/reducer_decision/v0.1",
+  "title": "AuspexAI Reducer Decision v0.1",
+  "description": "What a tenant reducer writes to its --output path. The coordinator reads this to decide whether the replicated workers agreed on the work unit's result. When verdict is 'agree', the merged payload is the canonical result the coordinator stores. When verdict is 'disagree', the coordinator handles the disagreement per its own policy (typically: re-dispatch to fresh workers, or mark the unit failed after N retries). Immutable once published.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "verdict"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "0.1"
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["agree", "disagree"]
+    },
+    "merged": {
+      "type": "object",
+      "description": "Tenant-defined canonical merged payload. Required when verdict is 'agree'; must be omitted when verdict is 'disagree'."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "verdict": { "const": "agree" }
+        },
+        "required": ["verdict"]
+      },
+      "then": {
+        "required": ["merged"]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "verdict": { "const": "disagree" }
+        },
+        "required": ["verdict"]
+      },
+      "then": {
+        "not": {
+          "required": ["merged"]
+        }
+      }
+    }
+  ]
+}

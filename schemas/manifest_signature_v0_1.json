@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://auspexai.network/schemas/manifest_signature/v0.1",
+  "title": "AuspexAI Manifest Signature v0.1",
+  "description": "Detached signature envelope that accompanies a signed manifest. The coordinator verifies the signature against a published roster of trusted maintainer pubkeys before accepting a manifest. v0.1 uses Ed25519 over the Pydantic model_dump_json canonical encoding of the manifest; cross-language canonical JSON (RFC 8785) and platform-side Sigstore + Rekor recording deferred to Phase 2+. Immutable once published.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["sig_v", "maintainer_pubkey", "signature"],
+  "properties": {
+    "sig_v": {
+      "type": "string",
+      "const": "0.1"
+    },
+    "maintainer_pubkey": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "Lowercase hex of the 32-byte Ed25519 public key. Verifiers cross-check this against the coordinator's published maintainer roster."
+    },
+    "signature": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9+/=]+$",
+      "description": "Base64-encoded Ed25519 signature (64 raw bytes) over the canonical JSON encoding of the manifest (Pydantic model_dump_json output, UTF-8 bytes)."
+    }
+  }
+}

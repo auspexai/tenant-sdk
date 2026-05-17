@@ -1,0 +1,17 @@
+; AuspexAI Manifest Signature, v0.1
+;
+; Detached signature envelope written alongside a signed manifest. The
+; coordinator verifies the signature against its published roster of trusted
+; maintainer pubkeys before accepting the manifest.
+;
+; v0.1 signs the Pydantic model_dump_json output (UTF-8 bytes) with Ed25519.
+; Cross-language canonical JSON (RFC 8785) and Sigstore + Rekor recording are
+; deferred to Phase 2+ — see signing.py module docstring for rationale.
+;
+; Per Principles & Scope §11, this file is immutable once published.
+
+manifest_signature = {
+  sig_v: "0.1",
+  maintainer_pubkey: tstr .regexp "^[a-f0-9]{64}$",  ; lowercase hex, 32 bytes
+  signature: tstr,                                    ; base64 Ed25519 sig
+}

@@ -1,0 +1,23 @@
+; AuspexAI Reducer Decision, v0.1
+;
+; What a tenant reducer writes to its --output path after consuming N
+; replicated result files for a work unit. The coordinator reads this to
+; decide whether the workers agreed; on "agree" the merged payload is the
+; canonical result for the work unit; on "disagree" the coordinator handles
+; the disagreement per its own policy.
+;
+; Per Principles & Scope §11, this file is immutable once published.
+
+reducer_decision = agree_decision / disagree_decision
+
+agree_decision = {
+  schema_version: "0.1",
+  verdict: "agree",
+  merged: { * tstr => any },                ; tenant-defined merged payload
+}
+
+disagree_decision = {
+  schema_version: "0.1",
+  verdict: "disagree",
+  ; merged is intentionally absent
+}

@@ -22,11 +22,21 @@ from auspexai_tenant.manifest import (
     StaticWorkUnitSource,
     WorkUnitSource,
 )
+from auspexai_tenant.reducer import ReducerDecision, ReducerFn, ReducerHarness
+from auspexai_tenant.signing import (
+    DEFAULT_KEY_PATH,
+    MaintainerKey,
+    ManifestSignature,
+    sign_manifest,
+    verify_manifest,
+)
+from auspexai_tenant.upload import UploadResult, upload_manifest
 from auspexai_tenant.workunits import ExecutorOutput, Result, WorkUnit
 
 __version__ = "0.1.0"
 
 __all__ = [
+    "DEFAULT_KEY_PATH",
     "ApproverAttestation",
     "BuiltinReducer",
     "CustomReducer",
@@ -35,13 +45,22 @@ __all__ = [
     "ExecutorHarness",
     "ExecutorOutput",
     "HttpWorkUnitSource",
+    "MaintainerKey",
     "Manifest",
+    "ManifestSignature",
     "Model",
     "Reducer",
+    "ReducerDecision",
+    "ReducerFn",
+    "ReducerHarness",
     "Result",
     "SensitiveContentFlag",
     "StaticWorkUnitSource",
+    "UploadResult",
     "WorkUnit",
     "WorkUnitSource",
     "__version__",
+    "sign_manifest",
+    "upload_manifest",
+    "verify_manifest",
 ]
