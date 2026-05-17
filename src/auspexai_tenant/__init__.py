@@ -22,6 +22,14 @@ from auspexai_tenant.manifest import (
     StaticWorkUnitSource,
     WorkUnitSource,
 )
+from auspexai_tenant.receipts import (
+    QuorumAgreement,
+    Receipt,
+    ResultHashAnchor,
+    TimeWindow,
+    decode_cbor,
+    encode_cbor,
+)
 from auspexai_tenant.reducer import ReducerDecision, ReducerFn, ReducerHarness
 from auspexai_tenant.signing import (
     DEFAULT_KEY_PATH,
@@ -31,7 +39,13 @@ from auspexai_tenant.signing import (
     verify_manifest,
 )
 from auspexai_tenant.upload import UploadResult, upload_manifest
-from auspexai_tenant.workunits import ExecutorOutput, Result, WorkUnit
+from auspexai_tenant.workunits import (
+    ExecutorOutput,
+    Result,
+    WorkUnit,
+    tar_reader,
+    tar_writer,
+)
 
 __version__ = "0.1.0"
 
@@ -49,18 +63,26 @@ __all__ = [
     "Manifest",
     "ManifestSignature",
     "Model",
+    "QuorumAgreement",
+    "Receipt",
     "Reducer",
     "ReducerDecision",
     "ReducerFn",
     "ReducerHarness",
     "Result",
+    "ResultHashAnchor",
     "SensitiveContentFlag",
     "StaticWorkUnitSource",
+    "TimeWindow",
     "UploadResult",
     "WorkUnit",
     "WorkUnitSource",
     "__version__",
+    "decode_cbor",
+    "encode_cbor",
     "sign_manifest",
+    "tar_reader",
+    "tar_writer",
     "upload_manifest",
     "verify_manifest",
 ]

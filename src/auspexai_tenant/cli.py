@@ -6,12 +6,10 @@ v0.1 commands:
     auspexai-tenant manifest validate       # validate a manifest against the schema
     auspexai-tenant manifest sign           # sign a manifest with the maintainer key
     auspexai-tenant manifest upload         # POST a (signed) manifest to a coordinator
+    auspexai-tenant receipts show           # pretty-print a CBOR-encoded receipt
 
-Future commands (next sessions):
-- workunits tar-writer helper
-- receipts show
-- executor harness scaffolding (the harness itself ships as a library entry; no
-  CLI wrapper yet — tenants embed it directly).
+The ExecutorHarness and ReducerHarness ship as library entries (tenants embed
+them in their executor / reducer scripts directly); they have no CLI wrapper.
 """
 
 from __future__ import annotations
@@ -26,6 +24,7 @@ from pydantic import ValidationError
 
 from auspexai_tenant import __version__
 from auspexai_tenant.manifest import Manifest
+from auspexai_tenant.receipts import decode_cbor
 from auspexai_tenant.signing import (
     DEFAULT_KEY_PATH,
     MaintainerKey,
@@ -224,6 +223,37 @@ def manifest_upload(path: Path, coordinator: str, sig_path: Path | None, dry_run
         if result.body:
             click.echo(result.body, err=True)
         sys.exit(1)
+
+
+# ----------------------------------------------------------------------------
+# receipts commands
+# ----------------------------------------------------------------------------
+
+
+@main.group()
+def receipts() -> None:
+    """Receipt commands."""
+
+
+@receipts.command("show")
+@click.argument("path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+def receipts_show(path: Path) -> None:
+    """Decode a CBOR-encoded receipt and pretty-print it as JSON.
+
+    v0.1 reads raw CBOR receipts (the predicate body of an in-toto Statement
+    before COSE wrapping). Full COSE + in-toto + Rekor verification lands in
+    a later milestone alongside the platform-side signing infrastructure.
+    """
+    try:
+        receipt = decode_cbor(path.read_bytes())
+    except ValidationError as e:
+        click.echo(f"ERROR: {path} failed receipt v0.1 validation:\n{e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"ERROR: failed to decode {path}: {e}", err=True)
+        sys.exit(2)
+
+    click.echo(receipt.model_dump_json(indent=2))
 
 
 # ----------------------------------------------------------------------------

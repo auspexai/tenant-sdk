@@ -1,0 +1,28 @@
+{
+  "schema_version": "0.1",
+  "tenant_id": "synth-doubler",
+  "tenant_maintainer_contact": "synth-doubler-test@auspexai.network",
+  "experiment_id": "synth-doubler-v1",
+  "research_goal_paragraph": "Deliberately non-LLM synthetic test tenant. Each work unit contains an integer; the executor doubles it. This tenant exists to exercise the AuspexAI SDK's tenant-neutral contracts (manifest, workunit, executor-output, result) without any Sentinel-shaped or LLM-shaped assumptions, per the rule-of-three-inverse forcing function in Principles & Scope §5.3.",
+  "models": [
+    {
+      "id": "synthetic-noop-model",
+      "version": "1.0",
+      "local_weights_required": false
+    }
+  ],
+  "prompt_set_characteristics": "No prompts. Each work unit carries a single integer in payload.value.",
+  "sensitive_content_flags": [],
+  "expected_duration_hours": 1,
+  "replication_factor": 3,
+  "work_unit_source": {
+    "kind": "static",
+    "tarball_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "executor": {
+    "command": ["python", "executor.py"]
+  },
+  "reducer": {
+    "kind": "builtin_hash_agreement"
+  }
+}
