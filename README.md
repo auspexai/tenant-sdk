@@ -32,7 +32,7 @@ The SDK is intentionally a thin client over a published data + subprocess contra
 
 ## License
 
-[Apache-2.0](LICENSE) for the SDK. Tenants are free to license their own tenant project code under whatever license suits their research — Sentinel ships under Apache-2.0; future tenants choose their own.
+[Apache-2.0](LICENSE) for the SDK. Tenants are free to license their own tenant project code under whatever license suits their research — the first tenant ships under Apache-2.0; future tenants choose their own.
 
 The AuspexAI **platform** (separate repos: `auspexai/platform`, `auspexai/worker`, `auspexai/coordinator`) is AGPL-3.0. The SDK/platform license split follows the published-contract pattern used by MongoDB drivers, Grafana plugins, and Sentry SDKs — copyleft on the server, permissive on the SDK.
 
