@@ -31,7 +31,7 @@ from auspexai_tenant.signing import (
     ManifestSignature,
     sign_manifest,
 )
-from auspexai_tenant.upload import upload_manifest
+from auspexai_tenant.upload import submit_experiment_from_files
 
 
 @click.group()
@@ -175,51 +175,74 @@ def manifest_sign(path: Path, key_path: Path, output: Path | None) -> None:
 @click.option(
     "--coordinator",
     required=True,
-    help="Coordinator base URL (e.g., https://coordinator.example.com).",
+    help="Coordinator base URL (e.g., https://coord.auspexai.network).",
 )
 @click.option(
     "--sig",
     "sig_path",
     type=click.Path(path_type=Path),
     default=None,
-    help="Signature file path (default: <manifest>.sig if it exists).",
+    help="Signature file path (default: <manifest>.sig).",
+)
+@click.option(
+    "--key",
+    "key_path",
+    type=click.Path(path_type=Path),
+    default=DEFAULT_KEY_PATH,
+    show_default=True,
+    help="Maintainer key used to sign the request (RFC 9421).",
 )
 @click.option(
     "--dry-run",
     is_flag=True,
-    help="Print the upload request without sending it.",
+    help="Print the request that would be sent without sending it.",
 )
-def manifest_upload(path: Path, coordinator: str, sig_path: Path | None, dry_run: bool) -> None:
-    """Upload a manifest (and signature, if present) to a coordinator."""
+def manifest_upload(
+    path: Path, coordinator: str, sig_path: Path | None, key_path: Path, dry_run: bool
+) -> None:
+    """Submit a manifest + signature to a coordinator's `POST /experiments`.
+
+    The request is authenticated with an RFC 9421 HTTP Message Signature using
+    the maintainer key; the coordinator resolves the signing key to your tenant.
+    A signature file (from `manifest sign`) is required.
+    """
     if sig_path is None:
-        default_sig = path.with_suffix(path.suffix + ".sig")
-        sig_path = default_sig if default_sig.exists() else None
-    elif not sig_path.exists():
-        click.echo(f"ERROR: --sig path does not exist: {sig_path}", err=True)
+        sig_path = path.with_suffix(path.suffix + ".sig")
+    if not sig_path.exists():
+        click.echo(
+            f"ERROR: signature file not found: {sig_path}\n"
+            "Run `auspexai-tenant manifest sign` first, or pass --sig.",
+            err=True,
+        )
         sys.exit(1)
 
+    endpoint = f"{coordinator.rstrip('/')}/api/v0/experiments"
+
     if dry_run:
-        endpoint = f"{coordinator.rstrip('/')}/api/v0/manifests"
-        click.echo(f"[dry-run] POST {endpoint}")
+        click.echo(f"[dry-run] POST {endpoint}  (RFC 9421 signed)")
         click.echo(f"[dry-run] manifest: {path} ({path.stat().st_size} bytes)")
-        if sig_path:
-            click.echo(f"[dry-run] signature: {sig_path} ({sig_path.stat().st_size} bytes)")
-        else:
-            click.echo("[dry-run] signature: (none)")
+        click.echo(f"[dry-run] signature: {sig_path} ({sig_path.stat().st_size} bytes)")
+        click.echo(f"[dry-run] signing key: {key_path}")
         return
 
     try:
-        result = upload_manifest(path, coordinator, sig_path)
+        k = MaintainerKey.load(key_path)
+    except (FileNotFoundError, ValueError) as e:
+        click.echo(f"ERROR: failed to load key from {key_path}: {e}", err=True)
+        sys.exit(1)
+
+    try:
+        result = submit_experiment_from_files(path, sig_path, coordinator, k)
     except httpx.RequestError as e:
         click.echo(f"ERROR: network failure: {e}", err=True)
         sys.exit(2)
 
     if result.ok:
-        click.echo(f"OK: uploaded ({result.status_code})")
+        click.echo(f"OK: submitted ({result.status_code})")
         if result.body:
             click.echo(result.body)
     else:
-        click.echo(f"ERROR: upload failed ({result.status_code})", err=True)
+        click.echo(f"ERROR: submission failed ({result.status_code})", err=True)
         if result.body:
             click.echo(result.body, err=True)
         sys.exit(1)

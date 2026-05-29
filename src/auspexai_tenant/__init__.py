@@ -9,6 +9,7 @@ data + subprocess contract, not the SDK's own license.
 """
 
 from auspexai_tenant.executor import ExecutorFn, ExecutorHarness
+from auspexai_tenant.http_signing import Rfc9421Auth, sign_request
 from auspexai_tenant.manifest import (
     ApproverAttestation,
     BuiltinReducer,
@@ -38,7 +39,11 @@ from auspexai_tenant.signing import (
     sign_manifest,
     verify_manifest,
 )
-from auspexai_tenant.upload import UploadResult, upload_manifest
+from auspexai_tenant.upload import (
+    UploadResult,
+    submit_experiment,
+    submit_experiment_from_files,
+)
 from auspexai_tenant.workunits import (
     ExecutorOutput,
     Result,
@@ -71,6 +76,7 @@ __all__ = [
     "ReducerHarness",
     "Result",
     "ResultHashAnchor",
+    "Rfc9421Auth",
     "SensitiveContentFlag",
     "StaticWorkUnitSource",
     "TimeWindow",
@@ -81,8 +87,10 @@ __all__ = [
     "decode_cbor",
     "encode_cbor",
     "sign_manifest",
+    "sign_request",
+    "submit_experiment",
+    "submit_experiment_from_files",
     "tar_reader",
     "tar_writer",
-    "upload_manifest",
     "verify_manifest",
 ]

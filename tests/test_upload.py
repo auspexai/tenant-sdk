@@ -1,103 +1,121 @@
-"""Tests for manifest upload — POST to the coordinator API.
+"""Tests for experiment submission — signed POST to the coordinator API.
 
-Uses httpx.MockTransport to test without a real network.
+Uses httpx.MockTransport to test without a real network. The request is
+RFC 9421-signed; tests assert the signing headers are present and the JSON
+body shape matches `POST /api/v0/experiments`.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import httpx
 from click.testing import CliRunner
 
 from auspexai_tenant.cli import main
-from auspexai_tenant.upload import upload_manifest
+from auspexai_tenant.signing import MaintainerKey
+from auspexai_tenant.upload import submit_experiment, submit_experiment_from_files
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
-
-def _mock_transport(handler) -> httpx.MockTransport:
-    return httpx.MockTransport(handler)
+_SIG = {"sig_v": "0.1", "maintainer_pubkey": "0" * 64, "signature": "AAAA"}
 
 
 def _client(handler) -> httpx.Client:
-    return httpx.Client(transport=_mock_transport(handler))
+    return httpx.Client(transport=httpx.MockTransport(handler))
 
 
-# ---- upload_manifest --------------------------------------------------------
+def _manifest() -> dict:
+    return json.loads((FIXTURES / "valid_minimal.json").read_text())
 
 
-def test_upload_manifest_only_no_signature(tmp_path: Path) -> None:
-    manifest_path = tmp_path / "manifest.json"
-    manifest_path.write_text((FIXTURES / "valid_minimal.json").read_text())
+# ---- submit_experiment ------------------------------------------------------
 
-    received: dict[str, object] = {}
+
+def test_submit_posts_signed_json_to_experiments() -> None:
+    key = MaintainerKey.generate()
+    seen: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        received["method"] = request.method
-        received["url"] = str(request.url)
-        received["content_type"] = request.headers.get("content-type", "")
-        received["body_len"] = len(request.content)
+        seen["method"] = request.method
+        seen["url"] = str(request.url)
+        seen["content_type"] = request.headers.get("content-type", "")
+        seen["has_sig_input"] = "signature-input" in request.headers
+        seen["has_content_digest"] = "content-digest" in request.headers
+        seen["body"] = json.loads(request.content)
         return httpx.Response(201, text='{"status":"accepted"}')
 
-    result = upload_manifest(
-        manifest_path,
-        "https://coord.test/",
-        signature_path=None,
-        client=_client(handler),
+    result = submit_experiment(
+        _manifest(), _SIG, "https://coord.test/", key, client=_client(handler)
     )
     assert result.ok is True
     assert result.status_code == 201
-    assert received["method"] == "POST"
-    assert received["url"] == "https://coord.test/api/v0/manifests"
-    assert "multipart/form-data" in received["content_type"]
+    assert seen["method"] == "POST"
+    assert seen["url"] == "https://coord.test/api/v0/experiments"
+    assert "application/json" in seen["content_type"]
+    assert seen["has_sig_input"] is True
+    assert seen["has_content_digest"] is True
+    assert set(seen["body"]) == {"manifest", "signature"}
+    assert seen["body"]["signature"] == _SIG
 
 
-def test_upload_with_signature(tmp_path: Path) -> None:
+def test_submit_keyid_matches_signing_key() -> None:
+    key = MaintainerKey.generate()
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["sig_input"] = request.headers.get("signature-input", "")
+        return httpx.Response(201, text="{}")
+
+    submit_experiment(_manifest(), _SIG, "https://coord.test", key, client=_client(handler))
+    assert f'keyid="{key.pubkey_hex.lower()}"' in seen["sig_input"]
+
+
+def test_submit_returns_status_for_4xx() -> None:
+    key = MaintainerKey.generate()
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, text='{"error":"manifest_tenant_mismatch"}')
+
+    result = submit_experiment(
+        _manifest(), _SIG, "https://coord.test", key, client=_client(handler)
+    )
+    assert result.ok is False
+    assert result.status_code == 403
+    assert "manifest_tenant_mismatch" in result.body
+
+
+def test_submit_strips_trailing_slash() -> None:
+    key = MaintainerKey.generate()
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(201, text="{}")
+
+    submit_experiment(_manifest(), _SIG, "https://coord.test/////", key, client=_client(handler))
+    assert seen[0] == "https://coord.test/api/v0/experiments"
+
+
+def test_submit_from_files(tmp_path: Path) -> None:
+    key = MaintainerKey.generate()
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text((FIXTURES / "valid_minimal.json").read_text())
     sig_path = tmp_path / "manifest.json.sig"
-    sig_path.write_text('{"sig_v":"0.1","maintainer_pubkey":"' + "0" * 64 + '","signature":"AAAA"}')
+    sig_path.write_text(json.dumps(_SIG))
 
-    body_seen: list[bytes] = []
+    seen: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        body_seen.append(request.content)
-        return httpx.Response(200, text="ok")
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(201, text="{}")
 
-    result = upload_manifest(manifest_path, "https://coord.test", sig_path, client=_client(handler))
+    result = submit_experiment_from_files(
+        manifest_path, sig_path, "https://coord.test", key, client=_client(handler)
+    )
     assert result.ok is True
-    body = body_seen[0].decode("utf-8", errors="replace")
-    # Both form parts should be in the multipart body
-    assert "manifest.json" in body
-    assert "manifest.json.sig" in body
-
-
-def test_upload_returns_status_for_4xx(tmp_path: Path) -> None:
-    manifest_path = tmp_path / "manifest.json"
-    manifest_path.write_text((FIXTURES / "valid_minimal.json").read_text())
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(400, text='{"error":"bad manifest"}')
-
-    result = upload_manifest(manifest_path, "https://coord.test", client=_client(handler))
-    assert result.ok is False
-    assert result.status_code == 400
-    assert "bad manifest" in result.body
-
-
-def test_upload_strips_trailing_slash(tmp_path: Path) -> None:
-    manifest_path = tmp_path / "manifest.json"
-    manifest_path.write_text((FIXTURES / "valid_minimal.json").read_text())
-
-    seen_url: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen_url.append(str(request.url))
-        return httpx.Response(200, text="")
-
-    upload_manifest(manifest_path, "https://coord.test/////", client=_client(handler))
-    assert seen_url[0] == "https://coord.test/api/v0/manifests"
+    assert seen["body"]["signature"] == _SIG
 
 
 # ---- CLI: manifest upload ---------------------------------------------------
@@ -107,45 +125,30 @@ def test_cli_manifest_upload_dry_run(tmp_path: Path) -> None:
     runner = CliRunner()
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text((FIXTURES / "valid_minimal.json").read_text())
+    sig_path = manifest_path.with_suffix(manifest_path.suffix + ".sig")
+    sig_path.write_text(json.dumps(_SIG))
 
     result = runner.invoke(
         main,
-        [
-            "manifest",
-            "upload",
-            str(manifest_path),
-            "--coordinator",
-            "https://coord.test",
-            "--dry-run",
-        ],
+        ["manifest", "upload", str(manifest_path), "--coordinator", "https://coord.test", "--dry-run"],
     )
     assert result.exit_code == 0, result.output
     assert "[dry-run]" in result.output
-    assert "POST https://coord.test/api/v0/manifests" in result.output
-    assert "manifest:" in result.output
+    assert "POST https://coord.test/api/v0/experiments" in result.output
+    assert "signed" in result.output
 
 
-def test_cli_manifest_upload_dry_run_picks_up_default_sig(tmp_path: Path) -> None:
+def test_cli_manifest_upload_requires_signature(tmp_path: Path) -> None:
     runner = CliRunner()
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text((FIXTURES / "valid_minimal.json").read_text())
-    sig_path = manifest_path.with_suffix(manifest_path.suffix + ".sig")
-    sig_path.write_text('{"sig_v":"0.1","maintainer_pubkey":"' + "0" * 64 + '","signature":"AAAA"}')
 
     result = runner.invoke(
         main,
-        [
-            "manifest",
-            "upload",
-            str(manifest_path),
-            "--coordinator",
-            "https://coord.test",
-            "--dry-run",
-        ],
+        ["manifest", "upload", str(manifest_path), "--coordinator", "https://coord.test", "--dry-run"],
     )
-    assert result.exit_code == 0
-    assert "signature:" in result.output
-    assert str(sig_path) in result.output
+    assert result.exit_code == 1
+    assert "signature file not found" in result.output
 
 
 def test_cli_manifest_upload_rejects_missing_sig_path(tmp_path: Path) -> None:
@@ -156,15 +159,11 @@ def test_cli_manifest_upload_rejects_missing_sig_path(tmp_path: Path) -> None:
     result = runner.invoke(
         main,
         [
-            "manifest",
-            "upload",
-            str(manifest_path),
-            "--coordinator",
-            "https://coord.test",
-            "--sig",
-            "/nonexistent/sig.sig",
+            "manifest", "upload", str(manifest_path),
+            "--coordinator", "https://coord.test",
+            "--sig", "/nonexistent/sig.sig",
             "--dry-run",
         ],
     )
     assert result.exit_code == 1
-    assert "does not exist" in result.output
+    assert "signature file not found" in result.output
