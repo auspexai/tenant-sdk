@@ -8,6 +8,8 @@ not a derivative work of the AGPL platform — the boundary is the published
 data + subprocess contract, not the SDK's own license.
 """
 
+from importlib.metadata import version as _v
+
 from auspexai_tenant.executor import ExecutorFn, ExecutorHarness
 from auspexai_tenant.http_signing import Rfc9421Auth, sign_request
 from auspexai_tenant.manifest import (
@@ -52,7 +54,8 @@ from auspexai_tenant.workunits import (
     tar_writer,
 )
 
-__version__ = "0.1.0"
+# Git-derived (hatch-vcs); read from installed metadata. See version_provenance.md.
+__version__ = _v("auspexai-tenant")
 
 __all__ = [
     "DEFAULT_KEY_PATH",

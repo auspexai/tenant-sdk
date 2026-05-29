@@ -1,6 +1,6 @@
 [project]
 name = "auspexai-tenant"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Tenant SDK for the AuspexAI volunteer compute network"
 readme = "README.md"
 license = "Apache-2.0"
@@ -45,8 +45,13 @@ Repository = "https://github.com/auspexai/tenant-sdk"
 Documentation = "https://github.com/auspexai/tenant-sdk#readme"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+# Version derived from git tags (hatch-vcs), stamped at build. See
+# version_provenance.md (V-M1).
+[tool.hatch.version]
+source = "vcs"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/auspexai_tenant"]
