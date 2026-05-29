@@ -130,7 +130,14 @@ def test_cli_manifest_upload_dry_run(tmp_path: Path) -> None:
 
     result = runner.invoke(
         main,
-        ["manifest", "upload", str(manifest_path), "--coordinator", "https://coord.test", "--dry-run"],
+        [
+            "manifest",
+            "upload",
+            str(manifest_path),
+            "--coordinator",
+            "https://coord.test",
+            "--dry-run",
+        ],
     )
     assert result.exit_code == 0, result.output
     assert "[dry-run]" in result.output
@@ -145,7 +152,14 @@ def test_cli_manifest_upload_requires_signature(tmp_path: Path) -> None:
 
     result = runner.invoke(
         main,
-        ["manifest", "upload", str(manifest_path), "--coordinator", "https://coord.test", "--dry-run"],
+        [
+            "manifest",
+            "upload",
+            str(manifest_path),
+            "--coordinator",
+            "https://coord.test",
+            "--dry-run",
+        ],
     )
     assert result.exit_code == 1
     assert "signature file not found" in result.output
@@ -159,9 +173,13 @@ def test_cli_manifest_upload_rejects_missing_sig_path(tmp_path: Path) -> None:
     result = runner.invoke(
         main,
         [
-            "manifest", "upload", str(manifest_path),
-            "--coordinator", "https://coord.test",
-            "--sig", "/nonexistent/sig.sig",
+            "manifest",
+            "upload",
+            str(manifest_path),
+            "--coordinator",
+            "https://coord.test",
+            "--sig",
+            "/nonexistent/sig.sig",
             "--dry-run",
         ],
     )
