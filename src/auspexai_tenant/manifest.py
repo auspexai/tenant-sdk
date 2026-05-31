@@ -90,7 +90,7 @@ class Executor(BaseModel):
 class BuiltinReducer(BaseModel):
     """Built-in SHA-256 hash-agreement reducer.
 
-    Suitable for deterministic outputs. Most Sentinel result shapes fit this.
+    Suitable for deterministic outputs (most hash-agreement result shapes fit).
     """
 
     model_config = ConfigDict(extra="forbid")
