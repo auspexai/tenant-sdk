@@ -23,6 +23,7 @@ import httpx
 from pydantic import ValidationError
 
 from auspexai_tenant import __version__
+from auspexai_tenant.client import CoordinatorError, TenantClient, verify_transfer
 from auspexai_tenant.manifest import Manifest
 from auspexai_tenant.receipts import decode_cbor
 from auspexai_tenant.signing import (
@@ -277,6 +278,162 @@ def receipts_show(path: Path) -> None:
         sys.exit(2)
 
     click.echo(receipt.model_dump_json(indent=2))
+
+
+# ----------------------------------------------------------------------------
+# experiment commands (M-Results retrieval)
+# ----------------------------------------------------------------------------
+
+_coord_opt = click.option(
+    "--coordinator",
+    required=True,
+    help="Coordinator base URL (e.g., https://coord.auspexai.network).",
+)
+_key_opt = click.option(
+    "--key",
+    "key_path",
+    type=click.Path(path_type=Path),
+    default=DEFAULT_KEY_PATH,
+    show_default=True,
+    help="Tenant key used to sign requests (RFC 9421).",
+)
+
+
+def _make_client(coordinator: str, key_path: Path) -> TenantClient:
+    try:
+        k = MaintainerKey.load(key_path)
+    except (FileNotFoundError, ValueError) as e:
+        click.echo(f"ERROR: failed to load key from {key_path}: {e}", err=True)
+        sys.exit(1)
+    return TenantClient(coordinator, k)
+
+
+def _run(fn):
+    """Call `fn`, mapping coordinator/network failures to CLI exit codes."""
+    try:
+        return fn()
+    except CoordinatorError as e:
+        click.echo(f"ERROR: {e}", err=True)
+        sys.exit(1)
+    except httpx.RequestError as e:
+        click.echo(f"ERROR: network failure: {e}", err=True)
+        sys.exit(2)
+
+
+@main.group()
+def experiment() -> None:
+    """Retrieve your experiments, results, receipts, and the offload bundle."""
+
+
+@experiment.command("list")
+@_coord_opt
+@_key_opt
+def experiment_list(coordinator: str, key_path: Path) -> None:
+    """List my experiments."""
+    client = _make_client(coordinator, key_path)
+    exps = _run(client.list_experiments)
+    for e in exps:
+        label = e.get("tenant_experiment_label", "")
+        click.echo(f"{e.get('experiment_id')}  {e.get('status')}  {label}")
+    if not exps:
+        click.echo("(no experiments)")
+
+
+@experiment.command("status")
+@click.argument("experiment_id")
+@_coord_opt
+@_key_opt
+def experiment_status(experiment_id: str, coordinator: str, key_path: Path) -> None:
+    """Show one experiment's detail (status, retention, collection)."""
+    client = _make_client(coordinator, key_path)
+    click.echo(json.dumps(_run(lambda: client.get_experiment(experiment_id)), indent=2))
+
+
+@experiment.command("results")
+@click.argument("experiment_id")
+@_coord_opt
+@_key_opt
+@click.option(
+    "--raw", is_flag=True, help="Include all replicas (T-X), not just the consensus copy."
+)
+@click.option(
+    "-o",
+    "--out",
+    "out_path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Write results JSON to a file instead of stdout.",
+)
+def experiment_results(
+    experiment_id: str, coordinator: str, key_path: Path, raw: bool, out_path: Path | None
+) -> None:
+    """Fetch result payloads — consensus (one per unit) by default, --raw for all
+    replicas. Pages through the full result set."""
+    client = _make_client(coordinator, key_path)
+    include = "raw" if raw else "consensus"
+    items = _run(lambda: list(client.iter_results(experiment_id, include=include)))
+    text = json.dumps(items, indent=2)
+    if out_path is not None:
+        out_path.write_text(text)
+        click.echo(f"Wrote {len(items)} result(s) to {out_path}")
+    else:
+        click.echo(text)
+
+
+@experiment.command("receipts")
+@click.argument("experiment_id")
+@_coord_opt
+@_key_opt
+def experiment_receipts(experiment_id: str, coordinator: str, key_path: Path) -> None:
+    """List the receipts issued for my experiment (the permanent proof layer)."""
+    client = _make_client(coordinator, key_path)
+    receipts_ = _run(lambda: client.get_receipts(experiment_id))
+    for r in receipts_:
+        click.echo(f"{r.get('receipt_id')}  issued {r.get('issued_at', '')}")
+    if not receipts_:
+        click.echo("(no receipts yet)")
+
+
+@experiment.command("export")
+@click.argument("experiment_id")
+@_coord_opt
+@_key_opt
+@click.option(
+    "-o",
+    "--out",
+    "out_path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Bundle output path (default: <experiment_id>-bundle.json).",
+)
+def experiment_export(
+    experiment_id: str, coordinator: str, key_path: Path, out_path: Path | None
+) -> None:
+    """Collect the offload bundle (consensus results + receipts + manifest + a
+    signed custody record) and save it. Collecting transfers data custody to you."""
+    client = _make_client(coordinator, key_path)
+    bundle = _run(lambda: client.export(experiment_id))
+    v = verify_transfer(bundle)
+    out = out_path or Path(f"{experiment_id}-bundle.json")
+    out.write_text(json.dumps(bundle, indent=2))
+    n_results = len(bundle.get("consensus_results") or [])
+    n_receipts = len(bundle.get("receipts") or [])
+    click.echo(f"Saved offload bundle to {out}: {n_results} result(s), {n_receipts} receipt(s).")
+    if v.valid:
+        click.echo(
+            f"Custody transfer VERIFIED — transfer {v.transfer_id}, "
+            f"signed by coordinator {v.coordinator_pubkey_hex[:16]}…"
+        )
+        click.echo(
+            "Per the Terms of Participation, data custody + legal responsibility are now yours."
+        )
+    else:
+        click.echo(
+            "WARNING: the custody-record signature did NOT verify against the "
+            "coordinator key. Do not trust this bundle.",
+            err=True,
+        )
+        sys.exit(1)
 
 
 # ----------------------------------------------------------------------------

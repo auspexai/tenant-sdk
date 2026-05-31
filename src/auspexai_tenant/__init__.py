@@ -10,6 +10,12 @@ data + subprocess contract, not the SDK's own license.
 
 from importlib.metadata import version as _v
 
+from auspexai_tenant.client import (
+    CoordinatorError,
+    TenantClient,
+    TransferVerification,
+    verify_transfer,
+)
 from auspexai_tenant.executor import ExecutorFn, ExecutorHarness
 from auspexai_tenant.http_signing import Rfc9421Auth, sign_request
 from auspexai_tenant.manifest import (
@@ -61,6 +67,7 @@ __all__ = [
     "DEFAULT_KEY_PATH",
     "ApproverAttestation",
     "BuiltinReducer",
+    "CoordinatorError",
     "CustomReducer",
     "Executor",
     "ExecutorFn",
@@ -82,7 +89,9 @@ __all__ = [
     "Rfc9421Auth",
     "SensitiveContentFlag",
     "StaticWorkUnitSource",
+    "TenantClient",
     "TimeWindow",
+    "TransferVerification",
     "UploadResult",
     "WorkUnit",
     "WorkUnitSource",
@@ -96,4 +105,5 @@ __all__ = [
     "tar_reader",
     "tar_writer",
     "verify_manifest",
+    "verify_transfer",
 ]
