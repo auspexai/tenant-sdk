@@ -175,4 +175,7 @@ def test_cli_version() -> None:
     runner = CliRunner()
     result = runner.invoke(main, ["--version"])
     assert result.exit_code == 0
-    assert "0.1.0" in result.output
+    # Version is hatch-vcs-derived (e.g. "0.1.0" on a tag, "0.1.devN+g<sha>" off
+    # one) — assert the prog name + a version string, not a hardcoded release.
+    assert "auspexai-tenant" in result.output
+    assert "version" in result.output

@@ -1,0 +1,157 @@
+"""Signed read client for the AuspexAI coordinator (M-Results retrieval).
+
+The SDK's first *read* surface. A researcher fetches their experiments, results,
+receipts, and the offload bundle over RFC 9421-signed GETs — authenticated with
+the same tenant maintainer key that signs experiment submission. Mirrors
+`upload.py`'s httpx + `Rfc9421Auth` pattern; pass `client` (an `httpx.Client`
+backed by `httpx.MockTransport`) to exercise it offline in tests.
+
+Retrieval maps to the coordinator routes:
+  - list_experiments / get_experiment  → GET /api/v0/experiments[/{id}]
+  - get_results / iter_results          → GET .../{id}/results[?include=raw]
+  - get_receipts                        → GET .../{id}/receipts
+  - export                              → GET .../{id}/results/export  (the offload
+                                          bundle; collection transfers data custody
+                                          to the researcher — verify_transfer checks
+                                          the coordinator's signed custody record)
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterator
+from dataclasses import dataclass
+from typing import Any
+
+import httpx
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+from auspexai_tenant.http_signing import Rfc9421Auth
+from auspexai_tenant.signing import MaintainerKey
+
+DEFAULT_TIMEOUT_S = 30.0
+
+
+class CoordinatorError(Exception):
+    """A non-2xx response from the coordinator."""
+
+    def __init__(self, status_code: int, body: str) -> None:
+        super().__init__(f"coordinator returned HTTP {status_code}: {body[:300]}")
+        self.status_code = status_code
+        self.body = body
+
+
+@dataclass(frozen=True)
+class TransferVerification:
+    """Result of checking an export bundle's signed custody record."""
+
+    valid: bool
+    transfer_id: str
+    result_set_root: str
+    collected_at: str
+    coordinator_pubkey_hex: str
+
+
+class TenantClient:
+    """Signed-GET client over the coordinator's tenant-scoped read routes.
+
+    Every call is RFC 9421-signed with `key`; the coordinator resolves the
+    signature to this tenant's researcher credential and scopes the response.
+    """
+
+    def __init__(
+        self,
+        coordinator_url: str,
+        key: MaintainerKey,
+        *,
+        timeout: float = DEFAULT_TIMEOUT_S,
+        client: httpx.Client | None = None,
+    ) -> None:
+        self._base = coordinator_url.rstrip("/")
+        self._auth = Rfc9421Auth(key)
+        self._timeout = timeout
+        self._client = client
+
+    def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        url = f"{self._base}{path}"
+        # The signature covers @path only (not @query), so query params ride
+        # unsigned — safe per the coordinator's RFC 9421 verification.
+        if self._client is None:
+            with httpx.Client(timeout=self._timeout) as c:
+                resp = c.get(url, auth=self._auth, params=params)
+        else:
+            resp = self._client.get(url, auth=self._auth, params=params)
+        if not resp.is_success:
+            raise CoordinatorError(resp.status_code, resp.text)
+        return resp.json()
+
+    # ---- experiments ----
+
+    def list_experiments(self) -> list[dict[str, Any]]:
+        return self._get("/api/v0/experiments").get("experiments") or []
+
+    def get_experiment(self, experiment_id: str) -> dict[str, Any]:
+        return self._get(f"/api/v0/experiments/{experiment_id}")
+
+    # ---- results ----
+
+    def get_results(
+        self, experiment_id: str, *, include: str = "consensus", cursor: str | None = None
+    ) -> dict[str, Any]:
+        """One page of results. `include` is 'consensus' (default, one per unit)
+        or 'raw' (all replicas). Returns {results, next_cursor}."""
+        params: dict[str, Any] = {"include": include}
+        if cursor:
+            params["cursor"] = cursor
+        return self._get(f"/api/v0/experiments/{experiment_id}/results", params)
+
+    def iter_results(
+        self, experiment_id: str, *, include: str = "consensus"
+    ) -> Iterator[dict[str, Any]]:
+        """All results, transparently following `next_cursor`."""
+        cursor: str | None = None
+        while True:
+            page = self.get_results(experiment_id, include=include, cursor=cursor)
+            yield from page.get("results") or []
+            cursor = page.get("next_cursor")
+            if not cursor:
+                return
+
+    # ---- receipts ----
+
+    def get_receipts(self, experiment_id: str) -> list[dict[str, Any]]:
+        return self._get(f"/api/v0/experiments/{experiment_id}/receipts").get("receipts") or []
+
+    # ---- offload bundle ----
+
+    def export(self, experiment_id: str) -> dict[str, Any]:
+        """Fetch the offload bundle (consensus payloads + receipts + manifest +
+        signed custody record). Collecting it transfers data custody to the
+        researcher and arms collection-anchored age-off coordinator-side."""
+        return self._get(f"/api/v0/experiments/{experiment_id}/results/export")
+
+
+def verify_transfer(bundle: dict[str, Any]) -> TransferVerification:
+    """Verify the coordinator's Ed25519 signature on an export bundle's transfer
+    (custody) record — proof Auspex delivered exactly these results to you.
+
+    The signed message is `result_set_root|collected_by|collected_at|manifest_hash`
+    (matching the coordinator's `api/results.export_results`)."""
+    t = bundle["transfer"]
+    record = (
+        f"{t['result_set_root']}|{t['collected_by_pubkey']}|"
+        f"{t['collected_at']}|{t['manifest_hash']}"
+    ).encode()
+    pub = Ed25519PublicKey.from_public_bytes(bytes.fromhex(t["coordinator_pubkey_hex"]))
+    valid = True
+    try:
+        pub.verify(bytes.fromhex(t["coordinator_signature"]), record)
+    except InvalidSignature:
+        valid = False
+    return TransferVerification(
+        valid=valid,
+        transfer_id=t["transfer_id"],
+        result_set_root=t["result_set_root"],
+        collected_at=t["collected_at"],
+        coordinator_pubkey_hex=t["coordinator_pubkey_hex"],
+    )
