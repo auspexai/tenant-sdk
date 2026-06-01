@@ -1,0 +1,15 @@
+{
+  "schema_version": "0.1",
+  "tenant_id": "synth-geometry",
+  "tenant_maintainer_contact": "synth-geometry-test@auspexai.network",
+  "experiment_id": "synth-geometry-v1",
+  "research_goal_paragraph": "Archetype-C synthetic test tenant (static weights-only geometric analysis), the §9 #30-33 genericity-pass forcing function. Deliberately maximally different from the integer doubler: no runtime input, the model's weight matrix is the subject, each work unit pins a PRNG seed and the executor estimates a floating-point geometric separation statistic (mean absolute cosine similarity over random row pairs) by seeded Monte-Carlo. Consensus rides the #33 determinism contract (seed + canonical quantization) so honest replicas bit-match under exact-hash quorum with no coordinator change. Exists to prove the platform's tenant-neutral contracts host archetype C in Phase 1; see Documentation/AuspexAI/v0.1.0/{genericity_pass_ratification,archetype_c_tenant_design}.md.",
+  "models": [{"id": "synthetic-unembedding-256x64", "version": "1.0", "local_weights_required": true}],
+  "prompt_set_characteristics": "No prompts. Each work unit carries {seed, n_samples, probe}; the model's weight matrix W is loaded from the worker's local --models dir (BYOM; local_weights_required declares the need).",
+  "sensitive_content_flags": [],
+  "expected_duration_hours": 1,
+  "replication_factor": 3,
+  "work_unit_source": {"kind": "static", "tarball_sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+  "executor": {"command": ["python", "executor.py"]},
+  "reducer": {"kind": "builtin_hash_agreement"}
+}

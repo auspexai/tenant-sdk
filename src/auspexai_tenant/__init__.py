@@ -39,6 +39,7 @@ from auspexai_tenant.receipts import (
     decode_cbor,
     encode_cbor,
 )
+from auspexai_tenant.determinism import canonical_quantize, canonicalize_floats
 from auspexai_tenant.reducer import ReducerDecision, ReducerFn, ReducerHarness
 from auspexai_tenant.signing import (
     DEFAULT_KEY_PATH,
@@ -96,6 +97,8 @@ __all__ = [
     "WorkUnit",
     "WorkUnitSource",
     "__version__",
+    "canonical_quantize",
+    "canonicalize_floats",
     "decode_cbor",
     "encode_cbor",
     "sign_manifest",
