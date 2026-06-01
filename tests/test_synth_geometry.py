@@ -55,11 +55,20 @@ def _run_executor(unit: dict, models_dir: Path, tmp_path: Path, tag: str) -> dic
     input_path.write_text(json.dumps(unit))
     proc = subprocess.run(
         [
-            sys.executable, str(GEOM_DIR / "executor.py"),
-            "--input", str(input_path), "--output", str(output_path),
-            "--models", str(models_dir), "--timeout", "60",
+            sys.executable,
+            str(GEOM_DIR / "executor.py"),
+            "--input",
+            str(input_path),
+            "--output",
+            str(output_path),
+            "--models",
+            str(models_dir),
+            "--timeout",
+            "60",
         ],
-        capture_output=True, text=True, check=False,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert proc.returncode == 0, f"executor failed: {proc.stderr or proc.stdout}"
     return json.loads(output_path.read_text())
@@ -131,7 +140,8 @@ def test_geometry_replicas_are_byte_identical(tmp_path: Path) -> None:
         # Mirror the coordinator's semantic_hash input (NOT completed_at).
         return json.dumps(
             {"exit_code": env["exit_code"], "payload": env["payload"]},
-            sort_keys=True, separators=(",", ":"),
+            sort_keys=True,
+            separators=(",", ":"),
         )
 
     assert _hashed(a) == _hashed(b)
