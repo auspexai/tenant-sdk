@@ -16,6 +16,7 @@ from auspexai_tenant.client import (
     TransferVerification,
     verify_transfer,
 )
+from auspexai_tenant.determinism import canonical_quantize, canonicalize_floats
 from auspexai_tenant.executor import ExecutorFn, ExecutorHarness
 from auspexai_tenant.http_signing import Rfc9421Auth, sign_request
 from auspexai_tenant.manifest import (
@@ -39,7 +40,6 @@ from auspexai_tenant.receipts import (
     decode_cbor,
     encode_cbor,
 )
-from auspexai_tenant.determinism import canonical_quantize, canonicalize_floats
 from auspexai_tenant.reducer import ReducerDecision, ReducerFn, ReducerHarness
 from auspexai_tenant.signing import (
     DEFAULT_KEY_PATH,
