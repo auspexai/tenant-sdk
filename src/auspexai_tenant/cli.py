@@ -349,21 +349,35 @@ def experiment_list(coordinator: str, key_path: Path) -> None:
     help="Also re-pull the consensus result set and recompute the root (the strong "
     "reproducibility check — proves the set you'd reduce is the attested one).",
 )
+@click.option(
+    "--checkpoint",
+    is_flag=True,
+    help="Fetch a partial consensus-so-far attestation over a not-yet-COMPLETED "
+    "experiment (M9 leg 2) — the integrity anchor for a partial collection.",
+)
 def experiment_attestation(
-    experiment_id: str, coordinator: str, key_path: Path, verify_against_results: bool
+    experiment_id: str,
+    coordinator: str,
+    key_path: Path,
+    verify_against_results: bool,
+    checkpoint: bool,
 ) -> None:
-    """Fetch + independently verify the result-set completion attestation (#34).
+    """Fetch + independently verify the result-set attestation (#34).
 
     Verifies the recomputed Merkle root, the COSE signature, and (with
     --verify-against-results) that a freshly-pulled result set reproduces the
-    attested root. Available once the experiment is COMPLETED."""
+    attested root. Available once the experiment is COMPLETED — or pass
+    --checkpoint for a partial (consensus-so-far) attestation while it's still
+    running."""
     from auspexai_tenant.attestation import verify_against_results as _check_results
     from auspexai_tenant.attestation import verify_attestation as _verify
 
     client = _make_client(coordinator, key_path)
-    att = _run(lambda: client.get_attestation(experiment_id))
+    att = _run(lambda: client.get_attestation(experiment_id, checkpoint=checkpoint))
     v = _verify(att)
     click.echo(f"attestation: {att.attestation_id}")
+    if att.partial:
+        click.echo("kind:        PARTIAL (checkpoint — consensus-so-far, not the final set)")
     click.echo(f"merkle_root: {att.merkle_root}")
     click.echo(f"units:       {att.unit_count}")
     click.echo(f"signer:      {v.signer_pubkey_hex}")

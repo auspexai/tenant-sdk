@@ -76,6 +76,57 @@ def test_get_attestation_parses_response() -> None:
     assert att.merkle_root == "abc123"
     assert att.unit_count == 2
     assert [u["unit_id"] for u in att.units] == ["u1", "u2"]
+    assert att.partial is False  # no partial key in response → False
+
+
+def test_get_attestation_checkpoint_passes_query_and_parses_partial() -> None:
+    """M9 leg 2: checkpoint=True sends ?checkpoint=true and surfaces partial."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v0/experiments/exp-1/attestation"
+        assert request.url.params.get("checkpoint") == "true"
+        return httpx.Response(
+            200,
+            json={
+                "attestation_id": "att-1",
+                "experiment_id": "exp-label",
+                "tenant_id": "tenant-a",
+                "merkle_root": "abc123",
+                "algorithm": "sha256-merkle-v0",
+                "unit_count": 1,
+                "units": [{"unit_id": "u1", "consensus_result_hash": "h1", "receipt_id": "rcpt-1"}],
+                "cose_b64": "AAAA",
+                "signing_key_pubkey_hex": "ab" * 32,
+                "rekor_log_index": 0,
+                "rekor_entry_uuid": "lab-mode-no-rekor",
+                "partial": True,
+            },
+        )
+
+    att = _tenant(handler).get_attestation("exp-1", checkpoint=True)
+    assert att.partial is True
+
+    # default (no checkpoint) must NOT send the query param
+    def handler_no_cp(request: httpx.Request) -> httpx.Response:
+        assert request.url.params.get("checkpoint") is None
+        return httpx.Response(
+            200,
+            json={
+                "attestation_id": "att-2",
+                "experiment_id": "exp-label",
+                "tenant_id": "tenant-a",
+                "merkle_root": "abc123",
+                "algorithm": "sha256-merkle-v0",
+                "unit_count": 0,
+                "units": [],
+                "cose_b64": "AAAA",
+                "signing_key_pubkey_hex": "ab" * 32,
+                "rekor_log_index": 0,
+                "rekor_entry_uuid": "lab-mode-no-rekor",
+            },
+        )
+
+    assert _tenant(handler_no_cp).get_attestation("exp-1").partial is False
 
 
 def test_get_results_passes_include_query() -> None:

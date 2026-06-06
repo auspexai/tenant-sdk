@@ -125,11 +125,17 @@ class TenantClient:
 
     # ---- completion attestation (#34 §6.3) ----
 
-    def get_attestation(self, experiment_id: str) -> ResultSetAttestation:
-        """Fetch the result-set completion attestation (available once the
-        experiment is COMPLETED). Verify it with
-        `auspexai_tenant.attestation.verify_attestation`."""
-        body = self._get(f"/api/v0/experiments/{experiment_id}/attestation")
+    def get_attestation(
+        self, experiment_id: str, *, checkpoint: bool = False
+    ) -> ResultSetAttestation:
+        """Fetch the result-set attestation. By default available once the
+        experiment is COMPLETED (the final set). **M9 leg 2** — pass
+        `checkpoint=True` for a partial consensus-so-far attestation over a
+        not-yet-complete experiment (`.partial is True`), the integrity anchor for
+        a partial collection when a pause/capacity-collapse stalls the run. Verify
+        with `auspexai_tenant.attestation.verify_attestation`."""
+        params = {"checkpoint": "true"} if checkpoint else None
+        body = self._get(f"/api/v0/experiments/{experiment_id}/attestation", params=params)
         return ResultSetAttestation.from_response(body)
 
     # ---- offload bundle ----

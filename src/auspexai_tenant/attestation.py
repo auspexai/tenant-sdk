@@ -83,6 +83,9 @@ class ResultSetAttestation:
     signing_key_pubkey_hex: str
     rekor_log_index: int
     rekor_entry_uuid: str
+    # M9 leg 2: True when this is a checkpoint over a not-yet-complete experiment
+    # (consensus-so-far). The same flag is in the COSE-signed predicate.
+    partial: bool = False
 
     @classmethod
     def from_response(cls, body: dict[str, Any]) -> ResultSetAttestation:
@@ -98,6 +101,7 @@ class ResultSetAttestation:
             signing_key_pubkey_hex=body["signing_key_pubkey_hex"],
             rekor_log_index=body.get("rekor_log_index", 0),
             rekor_entry_uuid=body.get("rekor_entry_uuid", ""),
+            partial=bool(body.get("partial", False)),
         )
 
 

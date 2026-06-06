@@ -30,9 +30,10 @@ def _unit(uid: str, h: str = "deadbeef", rid: str = "rcpt-x") -> dict:
     return {"unit_id": uid, "consensus_result_hash": h, "receipt_id": rid}
 
 
-def _sign_attestation(units: list[dict], key: Ed25519PrivateKey) -> dict:
+def _sign_attestation(units: list[dict], key: Ed25519PrivateKey, *, partial: bool = False) -> dict:
     """Produce a `GET /attestation` response body, COSE-signed exactly as the
-    coordinator's signing.py does."""
+    coordinator's signing.py does. `partial=True` mirrors the M9 leg-2 checkpoint
+    (the predicate carries `partial: true`, omitted otherwise)."""
     pub_hex = key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex()
     root = merkle_root(units)
     predicate = {
@@ -43,6 +44,8 @@ def _sign_attestation(units: list[dict], key: Ed25519PrivateKey) -> dict:
         "unit_count": len(units),
         "units": sorted(units, key=lambda u: u["unit_id"]),
     }
+    if partial:
+        predicate["partial"] = True
     predicate_cbor = cbor2.dumps(predicate, canonical=True)
     digest = hashlib.sha256(predicate_cbor).hexdigest()
     statement = {
@@ -68,6 +71,7 @@ def _sign_attestation(units: list[dict], key: Ed25519PrivateKey) -> dict:
         "signing_key_pubkey_hex": pub_hex,
         "rekor_log_index": 0,
         "rekor_entry_uuid": "lab-mode-no-rekor",
+        **({"partial": True} if partial else {}),
     }
 
 
@@ -105,6 +109,20 @@ def test_verify_attestation_happy_path():
     att = ResultSetAttestation.from_response(_sign_attestation([_unit("u1"), _unit("u2")], key))
     v = verify_attestation(att, authorized_signers=[pub_hex])
     assert v.ok
+    assert att.partial is False  # default response has no partial key → False
+
+
+def test_partial_checkpoint_attestation_parses_and_verifies():
+    """M9 leg 2: a checkpoint response carries partial=True; the SDK surfaces it
+    and verification still passes (the extra signed predicate key is tolerated)."""
+    key = Ed25519PrivateKey.generate()
+    pub_hex = key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex()
+    body = _sign_attestation([_unit("u1")], key, partial=True)
+    assert body["partial"] is True
+    att = ResultSetAttestation.from_response(body)
+    assert att.partial is True
+    v = verify_attestation(att, authorized_signers=[pub_hex])
+    assert v.ok  # signature + root checks unaffected by the partial flag
     assert v.signature_valid and v.signer_authorized
     assert v.root_matches_units and v.signed_root_matches
     assert v.signer_pubkey_hex == pub_hex
