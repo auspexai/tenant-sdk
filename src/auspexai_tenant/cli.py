@@ -339,6 +339,50 @@ def experiment_list(coordinator: str, key_path: Path) -> None:
         click.echo("(no experiments)")
 
 
+@experiment.command("attestation")
+@click.argument("experiment_id")
+@_coord_opt
+@_key_opt
+@click.option(
+    "--verify-against-results",
+    is_flag=True,
+    help="Also re-pull the consensus result set and recompute the root (the strong "
+    "reproducibility check — proves the set you'd reduce is the attested one).",
+)
+def experiment_attestation(
+    experiment_id: str, coordinator: str, key_path: Path, verify_against_results: bool
+) -> None:
+    """Fetch + independently verify the result-set completion attestation (#34).
+
+    Verifies the recomputed Merkle root, the COSE signature, and (with
+    --verify-against-results) that a freshly-pulled result set reproduces the
+    attested root. Available once the experiment is COMPLETED."""
+    from auspexai_tenant.attestation import verify_against_results as _check_results
+    from auspexai_tenant.attestation import verify_attestation as _verify
+
+    client = _make_client(coordinator, key_path)
+    att = _run(lambda: client.get_attestation(experiment_id))
+    v = _verify(att)
+    click.echo(f"attestation: {att.attestation_id}")
+    click.echo(f"merkle_root: {att.merkle_root}")
+    click.echo(f"units:       {att.unit_count}")
+    click.echo(f"signer:      {v.signer_pubkey_hex}")
+    click.echo(f"signature:   {'valid' if v.signature_valid else 'INVALID'}")
+    root_ok = v.root_matches_units and v.signed_root_matches
+    click.echo(f"root match:  {'ok' if root_ok else 'MISMATCH'}")
+    if att.rekor_log_index:
+        click.echo(f"rekor:       logIndex {att.rekor_log_index}")
+    if verify_against_results:
+        results = list(_run(lambda: list(client.iter_results(experiment_id))))
+        click.echo(
+            f"vs results:  {'ok — re-pulled set reproduces the attested root' if _check_results(att, results) else 'MISMATCH'}"
+        )
+    if not v.ok:
+        click.echo("VERIFICATION FAILED", err=True)
+        sys.exit(1)
+    click.echo("verified ✓")
+
+
 @experiment.command("status")
 @click.argument("experiment_id")
 @_coord_opt

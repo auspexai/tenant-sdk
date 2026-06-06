@@ -49,6 +49,35 @@ def test_list_experiments() -> None:
     assert _tenant(handler).list_experiments() == [{"experiment_id": "exp-1"}]
 
 
+def test_get_attestation_parses_response() -> None:
+    body = {
+        "attestation_id": "att-1",
+        "experiment_id": "exp-label",
+        "tenant_id": "tenant-a",
+        "merkle_root": "abc123",
+        "algorithm": "sha256-merkle-v0",
+        "unit_count": 2,
+        "units": [
+            {"unit_id": "u1", "consensus_result_hash": "h1", "receipt_id": "rcpt-1"},
+            {"unit_id": "u2", "consensus_result_hash": "h2", "receipt_id": "rcpt-2"},
+        ],
+        "cose_b64": "AAAA",
+        "signing_key_pubkey_hex": "ab" * 32,
+        "rekor_log_index": 0,
+        "rekor_entry_uuid": "lab-mode-no-rekor",
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v0/experiments/exp-1/attestation"
+        return httpx.Response(200, json=body)
+
+    att = _tenant(handler).get_attestation("exp-1")
+    assert att.attestation_id == "att-1"
+    assert att.merkle_root == "abc123"
+    assert att.unit_count == 2
+    assert [u["unit_id"] for u in att.units] == ["u1", "u2"]
+
+
 def test_get_results_passes_include_query() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.params.get("include") == "raw"
