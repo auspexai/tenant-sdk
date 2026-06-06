@@ -26,6 +26,7 @@ import httpx
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
+from auspexai_tenant.attestation import ResultSetAttestation
 from auspexai_tenant.http_signing import Rfc9421Auth
 from auspexai_tenant.signing import MaintainerKey
 
@@ -121,6 +122,15 @@ class TenantClient:
 
     def get_receipts(self, experiment_id: str) -> list[dict[str, Any]]:
         return self._get(f"/api/v0/experiments/{experiment_id}/receipts").get("receipts") or []
+
+    # ---- completion attestation (#34 §6.3) ----
+
+    def get_attestation(self, experiment_id: str) -> ResultSetAttestation:
+        """Fetch the result-set completion attestation (available once the
+        experiment is COMPLETED). Verify it with
+        `auspexai_tenant.attestation.verify_attestation`."""
+        body = self._get(f"/api/v0/experiments/{experiment_id}/attestation")
+        return ResultSetAttestation.from_response(body)
 
     # ---- offload bundle ----
 

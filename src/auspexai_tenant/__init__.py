@@ -10,6 +10,13 @@ data + subprocess contract, not the SDK's own license.
 
 from importlib.metadata import version as _v
 
+from auspexai_tenant.attestation import (
+    AttestationVerification,
+    ResultSetAttestation,
+    merkle_root,
+    verify_against_results,
+    verify_attestation,
+)
 from auspexai_tenant.client import (
     CoordinatorError,
     TenantClient,
@@ -67,6 +74,7 @@ __version__ = _v("auspexai-tenant")
 __all__ = [
     "DEFAULT_KEY_PATH",
     "ApproverAttestation",
+    "AttestationVerification",
     "BuiltinReducer",
     "CoordinatorError",
     "CustomReducer",
@@ -87,6 +95,7 @@ __all__ = [
     "ReducerHarness",
     "Result",
     "ResultHashAnchor",
+    "ResultSetAttestation",
     "Rfc9421Auth",
     "SensitiveContentFlag",
     "StaticWorkUnitSource",
@@ -101,12 +110,15 @@ __all__ = [
     "canonicalize_floats",
     "decode_cbor",
     "encode_cbor",
+    "merkle_root",
     "sign_manifest",
     "sign_request",
     "submit_experiment",
     "submit_experiment_from_files",
     "tar_reader",
     "tar_writer",
+    "verify_against_results",
+    "verify_attestation",
     "verify_manifest",
     "verify_transfer",
 ]
