@@ -29,6 +29,8 @@ model = {
   id: tstr,
   version: tstr,
   local_weights_required: bool,
+  ? hf_repo: tstr,        ; M3: optional HuggingFace repo for lazy auto-acquire
+  ? hf_filename: tstr,    ; M3: optional exact pinned GGUF file within hf_repo
 }
 
 sensitive_flag = "dual_use" / "red_team" / "harmful_output_generation"

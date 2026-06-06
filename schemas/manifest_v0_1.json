@@ -54,7 +54,15 @@
         "properties": {
           "id": { "type": "string" },
           "version": { "type": "string" },
-          "local_weights_required": { "type": "boolean" }
+          "local_weights_required": { "type": "boolean" },
+          "hf_repo": {
+            "type": "string",
+            "description": "Optional HuggingFace repo (e.g. 'Org/Model-GGUF') for M3 lazy auto-acquire. Self-describing acquisition coordinate; absent ⇒ stage weights out-of-band (BYOM)."
+          },
+          "hf_filename": {
+            "type": "string",
+            "description": "Optional exact file within hf_repo (the pinned GGUF quant) so consensus replicas run an identical quant. Paired with hf_repo to make the model auto-acquirable."
+          }
         }
       }
     },

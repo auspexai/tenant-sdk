@@ -25,13 +25,24 @@ SensitiveContentFlag = Literal[
 
 
 class Model(BaseModel):
-    """A model the experiment requires workers to have locally (BYOM — §5.8)."""
+    """A model the experiment requires workers to have locally (BYOM — §5.8).
+
+    `hf_repo` + `hf_filename` are optional acquisition coordinates (M3 lazy
+    auto-acquire): when present, an auto-acquire-enabled worker that lacks the
+    model may pull this exact file (the pinned quant) from HuggingFace rather
+    than refusing the unit. They are self-describing — a provisioned worker
+    reads them from its locally-staged manifest. Absent coords ⇒ the model must
+    be staged out-of-band (the pre-M3 BYOM behavior). `hf_filename` pins the
+    exact GGUF so hash-agreement consensus runs the identical quant across
+    replicas (the acquisition-side analog of the manifest_sha256 pin)."""
 
     model_config = ConfigDict(extra="forbid")
 
     id: str
     version: str
     local_weights_required: bool
+    hf_repo: str | None = None
+    hf_filename: str | None = None
 
 
 class ApproverAttestation(BaseModel):

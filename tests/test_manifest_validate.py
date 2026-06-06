@@ -97,6 +97,30 @@ def test_pydantic_roundtrip_preserves_data() -> None:
     assert m2.sensitive_content_flags == m.sensitive_content_flags
 
 
+def test_model_acquisition_coords_default_absent() -> None:
+    """M3: hf_repo/hf_filename are optional — manifests without them (every
+    pre-M3 manifest) still validate, and the coords read as None."""
+    raw = json.loads((FIXTURES / "valid_minimal.json").read_text())
+    m = Manifest.model_validate(raw)
+    assert m.models[0].hf_repo is None
+    assert m.models[0].hf_filename is None
+
+
+def test_model_acquisition_coords_roundtrip_and_schema() -> None:
+    """M3: a manifest carrying hf_repo + hf_filename validates against both the
+    Pydantic model and the published JSON Schema, and round-trips."""
+    schema = load_schema("manifest_v0_1.json")
+    raw = json.loads((FIXTURES / "valid_minimal.json").read_text())
+    raw["models"][0]["hf_repo"] = "Org/Model-GGUF"
+    raw["models"][0]["hf_filename"] = "Model-Q4_K_M.gguf"
+    jsonschema.validate(raw, schema)
+    m = Manifest.model_validate(raw)
+    assert m.models[0].hf_repo == "Org/Model-GGUF"
+    assert m.models[0].hf_filename == "Model-Q4_K_M.gguf"
+    m2 = Manifest.model_validate(json.loads(m.model_dump_json()))
+    assert m2.models[0].hf_filename == "Model-Q4_K_M.gguf"
+
+
 # --- JSON Schema vs Pydantic drift detector -----------------------------------
 
 
