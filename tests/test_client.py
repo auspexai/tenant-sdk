@@ -134,3 +134,48 @@ def test_export_bundle_round_trips_as_json() -> None:
     # A saved bundle must be plain JSON (the CLI writes it to disk).
     bundle = _signed_bundle()
     assert json.loads(json.dumps(bundle))["transfer"]["transfer_id"] == "xfer-1"
+
+
+# ---- demand-board (model requests, M2) -------------------------------------
+
+
+def test_get_catalog() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v0/models/catalog"
+        return httpx.Response(
+            200,
+            json={"models": [{"model_id": "m-x", "worker_count": 2}], "total_active_workers": 3},
+        )
+
+    cat = _tenant(handler).get_catalog()
+    assert cat["models"][0]["model_id"] == "m-x"
+    assert cat["total_active_workers"] == 3
+
+
+def test_request_model_posts_signed_body() -> None:
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        seen["body"] = json.loads(request.content)
+        seen["signed"] = "Signature" in request.headers
+        return httpx.Response(
+            201, json={"request_id": "mrq-1", "status": "pending", "model_id": "qwen3-q4"}
+        )
+
+    out = _tenant(handler).request_model("qwen3-q4", reason="need it", hf_repo="Qwen/X-GGUF")
+    assert out["status"] == "pending"
+    assert seen["method"] == "POST"
+    assert seen["path"] == "/api/v0/model-requests"
+    assert seen["body"] == {"model_id": "qwen3-q4", "reason": "need it", "hf_repo": "Qwen/X-GGUF"}
+    assert seen["signed"]  # RFC 9421 signed
+
+
+def test_request_model_omits_empty_hf_repo() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert "hf_repo" not in body
+        return httpx.Response(201, json={"request_id": "mrq-2", "status": "available"})
+
+    assert _tenant(handler).request_model("m-y", reason="x")["status"] == "available"

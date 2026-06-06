@@ -439,6 +439,48 @@ def experiment_export(
 # ----------------------------------------------------------------------------
 
 
+@main.group()
+def model() -> None:
+    """Browse the network model catalog + request models (demand-board, §9 #39)."""
+
+
+@model.command("catalog")
+@_coord_opt
+@_key_opt
+def model_catalog(coordinator: str, key_path: Path) -> None:
+    """Show the network's bottom-up model catalog (what active workers can run)."""
+    client = _make_client(coordinator, key_path)
+    cat = _run(client.get_catalog)
+    models = cat.get("models") or []
+    click.echo(f"network: {cat.get('total_active_workers', 0)} active worker(s)")
+    for m in models:
+        click.echo(f"  {m['model_id']:48} {m['worker_count']} worker(s)")
+    if not models:
+        click.echo("(no models on the network yet)")
+
+
+@model.command("request")
+@click.argument("model_id")
+@click.option("--reason", required=True, help="Why you need this model (one line).")
+@click.option("--hf-repo", "hf_repo", default=None, help="Optional HuggingFace repo hint.")
+@_coord_opt
+@_key_opt
+def model_request(
+    model_id: str, reason: str, hf_repo: str | None, coordinator: str, key_path: Path
+) -> None:
+    """Request a model (BYOM). MODEL_ID is the worker store id (<repo-slug>-<quant>)."""
+    client = _make_client(coordinator, key_path)
+    req = _run(lambda: client.request_model(model_id, reason=reason, hf_repo=hf_repo))
+    click.echo(f"request {req['request_id']}: {req['status']}")
+    if req["status"] == "available":
+        click.echo("  the network already has a worker that can run this model.")
+    elif req["status"] == "pending":
+        click.echo("  no active worker holds it yet — queued for maintainer review.")
+
+
+# ----------------------------------------------------------------------------
+
+
 if __name__ == "__main__":
     main()
 

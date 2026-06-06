@@ -130,6 +130,36 @@ class TenantClient:
         researcher and arms collection-anchored age-off coordinator-side."""
         return self._get(f"/api/v0/experiments/{experiment_id}/results/export")
 
+    # ---- demand-board (model requests, M2 / §9 #32/#39) ----
+
+    def _post(self, path: str, body: dict[str, Any]) -> Any:
+        url = f"{self._base}{path}"
+        if self._client is None:
+            with httpx.Client(timeout=self._timeout) as c:
+                resp = c.post(url, auth=self._auth, json=body)
+        else:
+            resp = self._client.post(url, auth=self._auth, json=body)
+        if not resp.is_success:
+            raise CoordinatorError(resp.status_code, resp.text)
+        return resp.json()
+
+    def get_catalog(self) -> dict[str, Any]:
+        """The network's bottom-up model catalog — the emergent set of models
+        active workers declare: {models:[{model_id, worker_count}], total_active_workers}."""
+        return self._get("/api/v0/models/catalog")
+
+    def request_model(
+        self, model_id: str, *, reason: str, hf_repo: str | None = None
+    ) -> dict[str, Any]:
+        """Signal demand for a model (BYOM, §5.8). `model_id` is the worker store
+        id (`<repo-slug>-<quant>`). Recorded as a demand signal; if no active
+        worker holds it the request enters the maintainer review queue
+        (status `pending`), otherwise it's `available`."""
+        body: dict[str, Any] = {"model_id": model_id, "reason": reason}
+        if hf_repo:
+            body["hf_repo"] = hf_repo
+        return self._post("/api/v0/model-requests", body)
+
 
 def verify_transfer(bundle: dict[str, Any]) -> TransferVerification:
     """Verify the coordinator's Ed25519 signature on an export bundle's transfer
