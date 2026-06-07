@@ -14,6 +14,7 @@ them in their executor / reducer scripts directly); they have no CLI wrapper.
 
 from __future__ import annotations
 
+import importlib
 import json
 import sys
 from pathlib import Path
@@ -492,6 +493,126 @@ def experiment_export(
             err=True,
         )
         sys.exit(1)
+
+
+def _load_attr(spec: str):
+    """Load a tenant factory named `module:attr` (e.g. `mypkg.run:build`)."""
+    if ":" not in spec:
+        click.echo(f"ERROR: expected 'module:attr', got {spec!r}", err=True)
+        sys.exit(1)
+    module_name, _, attr = spec.partition(":")
+    try:
+        module = importlib.import_module(module_name)
+        return getattr(module, attr)
+    except (ImportError, AttributeError) as e:
+        click.echo(f"ERROR: could not load {spec!r}: {e}", err=True)
+        sys.exit(1)
+
+
+def _load_key(key_path: Path):
+    try:
+        return MaintainerKey.load(key_path)
+    except (FileNotFoundError, ValueError) as e:
+        click.echo(f"ERROR: failed to load key from {key_path}: {e}", err=True)
+        sys.exit(1)
+
+
+@experiment.command("run")
+@click.argument("experiment_id")
+@click.option(
+    "--driver",
+    "driver_spec",
+    required=True,
+    help="Tenant driver factory 'module:attr' returning a DriverSpec "
+    "(condition / next_batch / reduce).",
+)
+@click.option(
+    "--journal",
+    "journal_path",
+    type=click.Path(path_type=Path),
+    required=True,
+    help="Run-journal path for durable crash-resume.",
+)
+@click.option(
+    "--doorbell",
+    is_flag=True,
+    help="Also subscribe to the SSE event stream and poll immediately on a relevant "
+    "event (the timer floor still guarantees liveness).",
+)
+@_coord_opt
+@_key_opt
+def experiment_run(
+    experiment_id: str,
+    driver_spec: str,
+    journal_path: Path,
+    doorbell: bool,
+    coordinator: str,
+    key_path: Path,
+) -> None:
+    """Drive an autonomic (adaptive / run-until-convergence) experiment, headless.
+
+    Loads your DriverSpec factory and runs the control loop — submit → poll agreed
+    results → fold → test condition → next batch or finalize — until convergence,
+    max_rounds, exhaustion, or a stall policy. Resumable via --journal."""
+    from auspexai_tenant.driver import DriverSpec, run_until
+    from auspexai_tenant.experiment import Experiment
+    from auspexai_tenant.wake import SseWake, sse_line_source
+
+    spec = _load_attr(driver_spec)()
+    if not isinstance(spec, DriverSpec):
+        click.echo(
+            f"ERROR: {driver_spec} must return a DriverSpec, got {type(spec).__name__}", err=True
+        )
+        sys.exit(1)
+    key = _load_key(key_path)
+    exp = Experiment(coordinator, key, experiment_id)
+    wake = spec.wake
+    if wake is None and doorbell:
+        wake = SseWake(sse_line_source(coordinator, key, experiment_id))
+    result = _run(
+        lambda: run_until(
+            exp,
+            condition=spec.condition,
+            next_batch=spec.next_batch,
+            reduce=spec.reduce,
+            journal=journal_path,
+            wake=wake,
+            stall=spec.stall,
+            max_rounds=spec.max_rounds,
+        )
+    )
+    click.echo(f"outcome:  {result.outcome}")
+    click.echo(f"rounds:   {result.rounds}")
+    click.echo("aggregate:")
+    click.echo(json.dumps(result.aggregate, indent=2, default=str))
+    if result.attestation is not None:
+        click.echo(f"attestation merkle_root: {result.attestation.merkle_root}")
+
+
+@experiment.command("reduce")
+@click.argument("experiment_id")
+@click.option(
+    "--reducer",
+    "reducer_spec",
+    required=True,
+    help="Factory 'module:attr' returning a RunningAggregate (fold/finalize).",
+)
+@_coord_opt
+@_key_opt
+def experiment_reduce(
+    experiment_id: str, reducer_spec: str, coordinator: str, key_path: Path
+) -> None:
+    """Batch-reduce a completed experiment's consensus result set with your
+    aggregator — the post-completion experiment-level reduce (#34)."""
+    agg = _load_attr(reducer_spec)()
+    if not (hasattr(agg, "fold") and hasattr(agg, "finalize")):
+        click.echo(f"ERROR: {reducer_spec} must return a RunningAggregate", err=True)
+        sys.exit(1)
+    client = _make_client(coordinator, key_path)
+    results = _run(lambda: list(client.iter_results(experiment_id)))
+    for result in results:
+        agg.fold(result)
+    click.echo(json.dumps(agg.finalize(), indent=2, default=str))
 
 
 # ----------------------------------------------------------------------------

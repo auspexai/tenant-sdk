@@ -94,6 +94,12 @@ class TenantClient:
     def get_experiment(self, experiment_id: str) -> dict[str, Any]:
         return self._get(f"/api/v0/experiments/{experiment_id}")
 
+    def get_activity(self, experiment_id: str) -> dict[str, Any]:
+        """The experiment's liveness rollup (anonymized contributor/unit counts,
+        replication fill, network size, and the caller's own-account workers).
+        The cheap snapshot the autonomic driver's `progress()` polls."""
+        return self._get(f"/api/v0/experiments/{experiment_id}/activity")
+
     # ---- results ----
 
     def get_results(

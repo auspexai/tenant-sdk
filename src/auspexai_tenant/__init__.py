@@ -10,6 +10,12 @@ data + subprocess contract, not the SDK's own license.
 
 from importlib.metadata import version as _v
 
+from auspexai_tenant.aggregate import (
+    Counter,
+    Histogram,
+    Mean,
+    RunningAggregate,
+)
 from auspexai_tenant.attestation import (
     AttestationVerification,
     ResultSetAttestation,
@@ -24,8 +30,31 @@ from auspexai_tenant.client import (
     verify_transfer,
 )
 from auspexai_tenant.determinism import canonical_quantize, canonicalize_floats
+from auspexai_tenant.driver import (
+    AbortAfter,
+    DriverSpec,
+    FinalizeOnPartial,
+    RunResult,
+    StallAction,
+    StallContext,
+    StallPolicy,
+    WaitForever,
+    run_until,
+)
 from auspexai_tenant.executor import ExecutorFn, ExecutorHarness
+from auspexai_tenant.experiment import (
+    Experiment,
+    LifecycleConflictError,
+    MaxUnitsExceededError,
+    Progress,
+    ResultPage,
+    SubmissionsFinalizedError,
+    SubmitResult,
+    Unit,
+    UnitsAlreadySubmittedError,
+)
 from auspexai_tenant.http_signing import Rfc9421Auth, sign_request
+from auspexai_tenant.journal import ResumeState, RunJournal, resume_state
 from auspexai_tenant.manifest import (
     ApproverAttestation,
     BuiltinReducer,
@@ -60,6 +89,15 @@ from auspexai_tenant.upload import (
     submit_experiment,
     submit_experiment_from_files,
 )
+from auspexai_tenant.wake import (
+    DOORBELL_EVENTS,
+    Backoff,
+    SseEvent,
+    SseWake,
+    TimerWake,
+    WakeSource,
+    sse_line_source,
+)
 from auspexai_tenant.workunits import (
     ExecutorOutput,
     Result,
@@ -73,20 +111,32 @@ __version__ = _v("auspexai-tenant")
 
 __all__ = [
     "DEFAULT_KEY_PATH",
+    "DOORBELL_EVENTS",
+    "AbortAfter",
     "ApproverAttestation",
     "AttestationVerification",
+    "Backoff",
     "BuiltinReducer",
     "CoordinatorError",
+    "Counter",
     "CustomReducer",
+    "DriverSpec",
     "Executor",
     "ExecutorFn",
     "ExecutorHarness",
     "ExecutorOutput",
+    "Experiment",
+    "FinalizeOnPartial",
+    "Histogram",
     "HttpWorkUnitSource",
+    "LifecycleConflictError",
     "MaintainerKey",
     "Manifest",
     "ManifestSignature",
+    "MaxUnitsExceededError",
+    "Mean",
     "Model",
+    "Progress",
     "QuorumAgreement",
     "Receipt",
     "Reducer",
@@ -95,14 +145,31 @@ __all__ = [
     "ReducerHarness",
     "Result",
     "ResultHashAnchor",
+    "ResultPage",
     "ResultSetAttestation",
+    "ResumeState",
     "Rfc9421Auth",
+    "RunJournal",
+    "RunResult",
+    "RunningAggregate",
     "SensitiveContentFlag",
+    "SseEvent",
+    "SseWake",
+    "StallAction",
+    "StallContext",
+    "StallPolicy",
     "StaticWorkUnitSource",
+    "SubmissionsFinalizedError",
+    "SubmitResult",
     "TenantClient",
     "TimeWindow",
+    "TimerWake",
     "TransferVerification",
+    "Unit",
+    "UnitsAlreadySubmittedError",
     "UploadResult",
+    "WaitForever",
+    "WakeSource",
     "WorkUnit",
     "WorkUnitSource",
     "__version__",
@@ -111,8 +178,11 @@ __all__ = [
     "decode_cbor",
     "encode_cbor",
     "merkle_root",
+    "resume_state",
+    "run_until",
     "sign_manifest",
     "sign_request",
+    "sse_line_source",
     "submit_experiment",
     "submit_experiment_from_files",
     "tar_reader",
