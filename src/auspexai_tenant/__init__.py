@@ -67,6 +67,7 @@ from auspexai_tenant.manifest import (
     SensitiveContentFlag,
     StaticWorkUnitSource,
     WorkUnitSource,
+    compute_package_digest,
 )
 from auspexai_tenant.receipts import (
     QuorumAgreement,
@@ -175,6 +176,7 @@ __all__ = [
     "__version__",
     "canonical_quantize",
     "canonicalize_floats",
+    "compute_package_digest",
     "decode_cbor",
     "encode_cbor",
     "merkle_root",

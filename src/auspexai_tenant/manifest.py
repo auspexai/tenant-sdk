@@ -13,6 +13,8 @@ re-accept the new hash.
 
 from __future__ import annotations
 
+import hashlib
+from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
@@ -96,6 +98,14 @@ class Executor(BaseModel):
 
     command: Annotated[list[str], Field(min_length=1)]
     image_sha256: Annotated[str | None, Field(pattern=r"^[a-f0-9]{64}$")] = None
+    # Digest over the executor *files* the tenant stages (computed by
+    # `compute_package_digest`). When set, the worker re-derives it over the staged
+    # package and refuses on mismatch — so a provisioned worker verifies the CODE
+    # it runs is what the tenant *signed*, not just that the manifest JSON matches
+    # (closes the provenance gap that local manual staging leaves open, and makes
+    # coordinator-served fetch a drop-in). Optional + backward-compatible: a
+    # manifest without it keeps the Phase-1 "operator is the trust root" behavior.
+    package_sha256: Annotated[str | None, Field(pattern=r"^[a-f0-9]{64}$")] = None
 
 
 class BuiltinReducer(BaseModel):
@@ -160,3 +170,33 @@ class Manifest(BaseModel):
                 "(Principles §5.12 research ethics)"
             )
         return self
+
+
+# Files never part of the executor package digest: the manifest itself (separately
+# content-addressed) and Python bytecode caches (runtime pollution).
+_PACKAGE_DIGEST_EXCLUDE = ("manifest.json",)
+
+
+def compute_package_digest(package_dir: str | Path) -> str:
+    """Digest over the executor *files* staged in `package_dir`, for the manifest's
+    `executor.package_sha256` (the provenance pin the worker verifies).
+
+    Canonical + deterministic: every regular file under `package_dir`, except
+    `manifest.json` and any `__pycache__/` / `*.pyc`, contributes one line
+    ``<posix-relpath>\\x00<sha256-hex>`` (lines sorted by relpath, joined by
+    ``\\n``); the digest is the SHA-256 of that blob. The worker re-implements this
+    byte-for-byte (`auspexai_worker.provisioning.compute_package_digest`) — the
+    shared contract is the format, not shared code (SDK is Apache, worker AGPL).
+    """
+    root = Path(package_dir)
+    lines: list[str] = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root).as_posix()
+        parts = rel.split("/")
+        if rel in _PACKAGE_DIGEST_EXCLUDE or rel.endswith(".pyc") or "__pycache__" in parts:
+            continue
+        file_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+        lines.append(f"{rel}\x00{file_hash}")
+    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
