@@ -18,15 +18,22 @@ from __future__ import annotations
 
 import hashlib
 import json
+from base64 import b64decode
 from dataclasses import dataclass
 from typing import Any
 
 import cbor2
+import httpx
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 RESULT_SET_ALGORITHM = "sha256-merkle-v0"
 RESULT_SET_PREDICATE_TYPE = "https://auspexai.network/result-set/v0"
+
+# Public Sigstore Rekor; overridable for a private instance. The not-yet-anchored
+# sentinel mirrors the coordinator's placeholder (receipts.rekor).
+DEFAULT_REKOR_URL = "https://rekor.sigstore.dev"
+REKOR_PLACEHOLDER_UUID = "lab-mode-no-rekor"
 
 _LEAF_PREFIX = b"\x00"
 _NODE_PREFIX = b"\x01"
@@ -106,9 +113,43 @@ class ResultSetAttestation:
 
 
 @dataclass(frozen=True)
+class RekorInclusion:
+    """Outcome of an online Rekor transparency-log inclusion check (A3).
+
+    `included` proves the attestation's exact COSE artifact is committed in a
+    Rekor Merkle tree (the returned root) and recorded at the cited log index —
+    i.e. the public-transparency guarantee on top of the offline COSE checks.
+
+    Residual trust (documented, not yet performed): the returned `root_hash` is
+    NOT verified against Rekor's *signed checkpoint* (which would pin the root to
+    Rekor's published key). Full anchoring is a future hardening; today the check
+    assumes the Rekor instance returns honest proof data.
+    """
+
+    checked: bool
+    entry_found: bool = False
+    log_index_matches: bool = False
+    artifact_committed: bool = False  # sha256(cose) == the envelope hash in the entry body
+    inclusion_proof_verified: bool = False  # RFC 6962 leaf → rootHash
+    log_index: int | None = None
+    tree_size: int | None = None
+    root_hash: str | None = None
+    error: str | None = None
+
+    @property
+    def included(self) -> bool:
+        return (
+            self.entry_found
+            and self.log_index_matches
+            and self.artifact_committed
+            and self.inclusion_proof_verified
+        )
+
+
+@dataclass(frozen=True)
 class AttestationVerification:
     """Outcome of `verify_attestation`. `ok` is the AND of every check that was
-    requested."""
+    requested (the Rekor inclusion check only when `check_rekor=True`)."""
 
     signature_valid: bool
     signer_authorized: bool
@@ -117,15 +158,19 @@ class AttestationVerification:
     signer_pubkey_hex: str | None
     attested_root: str
     recomputed_root: str
+    rekor_inclusion: RekorInclusion | None = None  # None unless check_rekor was requested
 
     @property
     def ok(self) -> bool:
-        return (
+        offline = (
             self.signature_valid
             and self.signer_authorized
             and self.root_matches_units
             and self.signed_root_matches
         )
+        if self.rekor_inclusion is not None:
+            return offline and self.rekor_inclusion.included
+        return offline
 
 
 class AttestationVerificationError(Exception):
@@ -168,10 +213,127 @@ def _cose_verify(cose_bytes: bytes) -> tuple[bool, str | None, bytes]:
     return valid, signer_hex, payload
 
 
+def _verify_merkle_inclusion_proof(
+    *,
+    leaf_hash: bytes,
+    leaf_index: int,
+    tree_size: int,
+    proof: list[bytes],
+    root_hash: bytes,
+) -> bool:
+    """RFC 6962 §2.1.1 inclusion-proof verification: prove `leaf_hash` is the leaf
+    at `leaf_index` in a Merkle tree of `tree_size` leaves with root `root_hash`,
+    given the audit path `proof`. Node hash = SHA-256(0x01 || left || right)."""
+    if leaf_index < 0 or leaf_index >= tree_size:
+        return False
+    fn, sn = leaf_index, tree_size - 1
+    r = leaf_hash
+    for p in proof:
+        if sn == 0:
+            return False
+        if (fn & 1) or (fn == sn):
+            r = hashlib.sha256(_NODE_PREFIX + p + r).digest()
+            if not (fn & 1):
+                while not (fn & 1) and fn != 0:
+                    fn >>= 1
+                    sn >>= 1
+        else:
+            r = hashlib.sha256(_NODE_PREFIX + r + p).digest()
+        fn >>= 1
+        sn >>= 1
+    return sn == 0 and r == root_hash
+
+
+def verify_rekor_inclusion(
+    cose_blob: bytes,
+    *,
+    log_index: int,
+    entry_uuid: str,
+    rekor_url: str = DEFAULT_REKOR_URL,
+    client: httpx.Client | None = None,
+    timeout: float = 10.0,
+) -> RekorInclusion:
+    """Online check (A3): confirm the attestation's COSE artifact is recorded in
+    the Rekor transparency log. Fetches the entry by UUID and verifies (a) it
+    exists, (b) its log index matches, (c) the entry body commits to `cose_blob`
+    (sha256(cose) == the recorded envelope hash), and (d) the RFC 6962 inclusion
+    proof from the entry leaf reaches the returned root. A not-anchored
+    attestation (placeholder UUID) returns `checked=False`. Network/parse errors
+    are reported in `error`, never raised — this is a best-effort strengthening
+    layer over the offline COSE checks. Pass `client` (e.g. httpx.MockTransport)
+    to test offline. See `RekorInclusion` for the residual trust assumption."""
+    if not entry_uuid or entry_uuid == REKOR_PLACEHOLDER_UUID:
+        return RekorInclusion(checked=False, error="attestation is not Rekor-anchored")
+    url = f"{rekor_url.rstrip('/')}/api/v1/log/entries/{entry_uuid}"
+    try:
+        if client is None:
+            with httpx.Client(timeout=timeout) as c:
+                resp = c.get(url)
+        else:
+            resp = client.get(url)
+    except Exception as exc:  # network failure — best-effort, report not raise
+        return RekorInclusion(checked=True, error=f"rekor fetch failed: {exc}")
+    if resp.status_code == 404:
+        return RekorInclusion(checked=True, entry_found=False, error="entry not found")
+    if not resp.is_success:
+        return RekorInclusion(checked=True, error=f"rekor returned HTTP {resp.status_code}")
+    try:
+        entry = next(iter(resp.json().values()))
+        body_b64 = entry["body"]
+        body_bytes = b64decode(body_b64)
+        entry_log_index = entry.get("logIndex")
+    except Exception as exc:
+        return RekorInclusion(checked=True, error=f"malformed rekor response: {exc}")
+
+    log_index_matches = entry_log_index == log_index
+
+    # (c) the entry body commits to our exact COSE envelope (intoto v0.0.2 stores
+    # the envelope's sha256 at spec.content.hash.value).
+    artifact_committed = False
+    try:
+        recorded = json.loads(body_bytes)["spec"]["content"]["hash"]["value"]
+        artifact_committed = recorded.lower() == hashlib.sha256(cose_blob).hexdigest()
+    except Exception:
+        artifact_committed = False
+
+    # (d) RFC 6962 inclusion proof: the entry leaf is in the tree with this root.
+    inclusion_proof_verified = False
+    tree_size: int | None = None
+    root_hex: str | None = None
+    try:
+        ip = entry["verification"]["inclusionProof"]
+        tree_size = int(ip["treeSize"])
+        root_hex = ip["rootHash"]
+        leaf_hash = hashlib.sha256(_LEAF_PREFIX + body_bytes).digest()
+        inclusion_proof_verified = _verify_merkle_inclusion_proof(
+            leaf_hash=leaf_hash,
+            leaf_index=int(ip["logIndex"]),
+            tree_size=tree_size,
+            proof=[bytes.fromhex(h) for h in ip["hashes"]],
+            root_hash=bytes.fromhex(root_hex),
+        )
+    except Exception:
+        inclusion_proof_verified = False
+
+    return RekorInclusion(
+        checked=True,
+        entry_found=True,
+        log_index_matches=log_index_matches,
+        artifact_committed=artifact_committed,
+        inclusion_proof_verified=inclusion_proof_verified,
+        log_index=entry_log_index,
+        tree_size=tree_size,
+        root_hash=root_hex,
+    )
+
+
 def verify_attestation(
     att: ResultSetAttestation,
     *,
     authorized_signers: list[str] | None = None,
+    check_rekor: bool = False,
+    rekor_url: str = DEFAULT_REKOR_URL,
+    rekor_client: httpx.Client | None = None,
 ) -> AttestationVerification:
     """Independently verify a result-set attestation:
 
@@ -183,11 +345,14 @@ def verify_attestation(
       3. confirm the COSE-signed predicate's `merkle_root` equals the response
          root (the response wasn't altered relative to the signed artifact).
 
-    `ok` is true only if all checks pass. To prove the *set itself* is the one
-    you reduced, also recompute `merkle_root(your_pulled_units)` and compare to
-    `att.merkle_root` — see `verify_against_results`."""
-    from base64 import b64decode
+    Checks 1-3 are fully OFFLINE - the default. Pass `check_rekor=True` for an
+    additional ONLINE Rekor transparency-log inclusion check (A3): it confirms
+    the COSE artifact is publicly logged at the cited index (see
+    `verify_rekor_inclusion`). When requested, `ok` also requires inclusion.
 
+    `ok` is true only if all requested checks pass. To prove the *set itself* is
+    the one you reduced, also recompute `merkle_root(your_pulled_units)` and
+    compare — see `verify_against_results`."""
     recomputed = merkle_root(att.units)
     root_matches_units = recomputed == att.merkle_root
 
@@ -210,6 +375,16 @@ def verify_attestation(
     except Exception:
         signed_root_matches = False
 
+    rekor_inclusion = None
+    if check_rekor:
+        rekor_inclusion = verify_rekor_inclusion(
+            b64decode(att.cose_b64),
+            log_index=att.rekor_log_index,
+            entry_uuid=att.rekor_entry_uuid,
+            rekor_url=rekor_url,
+            client=rekor_client,
+        )
+
     return AttestationVerification(
         signature_valid=signature_valid,
         signer_authorized=signer_authorized,
@@ -218,6 +393,7 @@ def verify_attestation(
         signer_pubkey_hex=signer_hex,
         attested_root=att.merkle_root,
         recomputed_root=recomputed,
+        rekor_inclusion=rekor_inclusion,
     )
 
 

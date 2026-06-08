@@ -356,26 +356,34 @@ def experiment_list(coordinator: str, key_path: Path) -> None:
     help="Fetch a partial consensus-so-far attestation over a not-yet-COMPLETED "
     "experiment (M9 leg 2) — the integrity anchor for a partial collection.",
 )
+@click.option(
+    "--check-rekor",
+    is_flag=True,
+    help="Also perform an ONLINE Rekor transparency-log inclusion check — confirm "
+    "the attestation's COSE artifact is publicly logged at its cited index.",
+)
 def experiment_attestation(
     experiment_id: str,
     coordinator: str,
     key_path: Path,
     verify_against_results: bool,
     checkpoint: bool,
+    check_rekor: bool,
 ) -> None:
     """Fetch + independently verify the result-set attestation (#34).
 
     Verifies the recomputed Merkle root, the COSE signature, and (with
     --verify-against-results) that a freshly-pulled result set reproduces the
-    attested root. Available once the experiment is COMPLETED — or pass
-    --checkpoint for a partial (consensus-so-far) attestation while it's still
-    running."""
+    attested root. All offline by default; pass --check-rekor for an online
+    transparency-log inclusion check. Available once the experiment is COMPLETED
+    — or pass --checkpoint for a partial (consensus-so-far) attestation while
+    it's still running."""
     from auspexai_tenant.attestation import verify_against_results as _check_results
     from auspexai_tenant.attestation import verify_attestation as _verify
 
     client = _make_client(coordinator, key_path)
     att = _run(lambda: client.get_attestation(experiment_id, checkpoint=checkpoint))
-    v = _verify(att)
+    v = _verify(att, check_rekor=check_rekor)
     click.echo(f"attestation: {att.attestation_id}")
     if att.partial:
         click.echo("kind:        PARTIAL (checkpoint — consensus-so-far, not the final set)")
@@ -387,6 +395,14 @@ def experiment_attestation(
     click.echo(f"root match:  {'ok' if root_ok else 'MISMATCH'}")
     if att.rekor_log_index:
         click.echo(f"rekor:       logIndex {att.rekor_log_index}")
+    if v.rekor_inclusion is not None:
+        ri = v.rekor_inclusion
+        if not ri.checked:
+            click.echo(f"rekor incl.: not anchored ({ri.error})")
+        elif ri.included:
+            click.echo(f"rekor incl.: ok — included in tree (size {ri.tree_size})")
+        else:
+            click.echo(f"rekor incl.: NOT VERIFIED ({ri.error or 'inclusion checks failed'})")
     if verify_against_results:
         results = list(_run(lambda: list(client.iter_results(experiment_id))))
         click.echo(
