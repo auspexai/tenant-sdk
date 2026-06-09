@@ -241,18 +241,28 @@ def test_rfc6962_inclusion_proof_matches_oracle():
         )
 
 
-def _rekor_entry(cose_blob: bytes, *, leaf_index=1, n_leaves=4, global_index=42, commit=True):
-    """A realistic Rekor intoto:0.0.2 entry whose leaf is our COSE artifact, with a
-    valid inclusion proof built by the oracle. `commit=False` records a different
-    envelope hash (artifact binding should then fail)."""
+def _rekor_entry(
+    cose_blob: bytes,
+    *,
+    leaf_index=1,
+    n_leaves=4,
+    global_index=42,
+    commit=True,
+    kind="rekord",
+):
+    """A realistic Rekor entry whose leaf is our COSE artifact, with a valid
+    inclusion proof built by the oracle. Default shape = rekord:0.0.1 (what the
+    coordinator anchors as — the only Rekor kind accepting pure-Ed25519; its
+    canonicalized body stores sha256(artifact) at spec.data.hash.value);
+    `kind="intoto"` produces the legacy spec.content shape the verifier still
+    tolerates. `commit=False` records a different artifact hash (binding should
+    then fail)."""
     env_hash = hashlib.sha256(cose_blob).hexdigest()
-    body = {
-        "apiVersion": "0.0.2",
-        "kind": "intoto",
-        "spec": {
-            "content": {"hash": {"algorithm": "sha256", "value": env_hash if commit else "11" * 32}}
-        },
-    }
+    recorded = {"hash": {"algorithm": "sha256", "value": env_hash if commit else "11" * 32}}
+    if kind == "rekord":
+        body = {"apiVersion": "0.0.1", "kind": "rekord", "spec": {"data": recorded}}
+    else:
+        body = {"apiVersion": "0.0.2", "kind": "intoto", "spec": {"content": recorded}}
     body_bytes = json.dumps(body).encode()
     data = [f"other-{i}".encode() for i in range(n_leaves)]
     data[leaf_index] = (
@@ -291,6 +301,16 @@ def test_verify_rekor_inclusion_ok():
     assert ri.included is True
     assert ri.entry_found and ri.log_index_matches and ri.artifact_committed
     assert ri.inclusion_proof_verified and ri.tree_size == 4
+
+
+def test_verify_rekor_inclusion_legacy_intoto_shape():
+    """The binding fallback still reads the legacy intoto spec.content shape."""
+    cose = b"\xde\xad\xbe\xef cose artifact"
+    entry = _rekor_entry(cose, global_index=42, kind="intoto")
+    ri = verify_rekor_inclusion(
+        cose, log_index=42, entry_uuid="uuid-1", client=_mock_rekor("uuid-1", entry)
+    )
+    assert ri.included is True and ri.artifact_committed
 
 
 def test_verify_rekor_inclusion_not_anchored():

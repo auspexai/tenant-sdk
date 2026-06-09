@@ -287,11 +287,15 @@ def verify_rekor_inclusion(
 
     log_index_matches = entry_log_index == log_index
 
-    # (c) the entry body commits to our exact COSE envelope (intoto v0.0.2 stores
-    # the envelope's sha256 at spec.content.hash.value).
+    # (c) the entry body commits to our exact COSE envelope. The coordinator
+    # anchors as rekord:0.0.1 (the only Rekor kind accepting pure-Ed25519;
+    # canonicalized body stores the artifact's sha256 at spec.data.hash.value).
+    # spec.content.hash.value is the legacy intoto shape, kept as a fallback.
     artifact_committed = False
     try:
-        recorded = json.loads(body_bytes)["spec"]["content"]["hash"]["value"]
+        spec = json.loads(body_bytes)["spec"]
+        node = spec.get("data") or spec.get("content") or {}
+        recorded = node["hash"]["value"]
         artifact_committed = recorded.lower() == hashlib.sha256(cose_blob).hexdigest()
     except Exception:
         artifact_committed = False
