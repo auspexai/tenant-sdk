@@ -68,3 +68,16 @@ def test_executor_accepts_package_sha256() -> None:
     ex = Executor(command=["python", "executor.py"], package_sha256=digest)
     assert ex.package_sha256 == digest
     assert Executor(command=["python", "executor.py"]).package_sha256 is None
+
+
+def test_manifest_sig_is_excluded(tmp_path):
+    """`manifest sign` writes <manifest>.sig INTO the package dir by default,
+    after the digest was computed — it must not poison executor.package_sha256
+    (every unit would otherwise be refused on the worker's re-derivation)."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "executor.py").write_text("print('hi')")
+    before = compute_package_digest(pkg)
+    (pkg / "manifest.json").write_text("{}")
+    (pkg / "manifest.json.sig").write_text('{"sig": "..."}')
+    assert compute_package_digest(pkg) == before

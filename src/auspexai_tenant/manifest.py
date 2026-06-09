@@ -174,7 +174,12 @@ class Manifest(BaseModel):
 
 # Files never part of the executor package digest: the manifest itself (separately
 # content-addressed) and Python bytecode caches (runtime pollution).
-_PACKAGE_DIGEST_EXCLUDE = ("manifest.json",)
+# manifest.json.sig is excluded because `manifest sign` writes it NEXT TO the
+# manifest by default (i.e. into the package dir) AFTER the digest was computed
+# — including it would poison executor.package_sha256 for any tenant staging
+# their package dir wholesale. The worker reimplementation excludes it
+# identically (the contract is the format, not shared code).
+_PACKAGE_DIGEST_EXCLUDE = ("manifest.json", "manifest.json.sig")
 
 
 def compute_package_digest(package_dir: str | Path) -> str:
@@ -182,7 +187,8 @@ def compute_package_digest(package_dir: str | Path) -> str:
     `executor.package_sha256` (the provenance pin the worker verifies).
 
     Canonical + deterministic: every regular file under `package_dir`, except
-    `manifest.json` and any `__pycache__/` / `*.pyc`, contributes one line
+    `manifest.json` / `manifest.json.sig` and any `__pycache__/` / `*.pyc`,
+    contributes one line
     ``<posix-relpath>\\x00<sha256-hex>`` (lines sorted by relpath, joined by
     ``\\n``); the digest is the SHA-256 of that blob. The worker re-implements this
     byte-for-byte (`auspexai_worker.provisioning.compute_package_digest`) — the
