@@ -45,7 +45,7 @@ import os
 import socket
 import sys
 import traceback
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 SOCKET_ENV = "AUSPEXAI_INFERENCE_SOCKET"
@@ -202,7 +202,7 @@ class LiteHarness:
         output = {
             "schema_version": "0.1",
             "unit_id": unit["unit_id"],
-            "completed_at": datetime.now(UTC).isoformat(),
+            "completed_at": datetime.now(timezone.utc).isoformat(),
             "exit_code": 0,
             "payload": payload,
         }

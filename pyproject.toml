@@ -92,6 +92,10 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+# lite.py is the VENDORABLE kit: its contract is the worker sandbox's system
+# Python (3.10). UP017 rewrites timezone.utc into the 3.11-only datetime.UTC
+# alias — the exact regression that broke the first D6 run.
+"src/auspexai_tenant/lite.py" = ["UP017"]
 "tests/**" = ["B011", "N802"]
 
 [tool.pytest.ini_options]
