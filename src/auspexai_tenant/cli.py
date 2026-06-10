@@ -676,6 +676,57 @@ def model_request(
 # ----------------------------------------------------------------------------
 
 
+@main.group()
+def software() -> None:
+    """Request worker-baseline capabilities (code-plane demand, §9 #46)."""
+
+
+@software.command("request")
+@click.argument("title")
+@click.option("--description", required=True, help="What capability is needed.")
+@click.option("--reason", required=True, help="Why your experiments need it (one line).")
+@_coord_opt
+@_key_opt
+def software_request(
+    title: str, description: str, reason: str, coordinator: str, key_path: Path
+) -> None:
+    """Request a software capability the worker baseline doesn't provide.
+
+    Enters the maintainer review queue: a dependencies/security/alternatives
+    assessment is attached before approve/decline, and a recorded worker
+    release later fulfils approved requests."""
+    client = _make_client(coordinator, key_path)
+    req = _run(lambda: client.request_software(title, description=description, reason=reason))
+    click.echo(f"request {req['request_id']}: {req['status']}")
+    click.echo("  queued for maintainer review (assessment → approve/decline → release).")
+
+
+@software.command("list")
+@click.option("--status", default=None, help="Filter: pending|assessed|approved|declined|released")
+@_coord_opt
+@_key_opt
+def software_list(status: str | None, coordinator: str, key_path: Path) -> None:
+    """List your tenant's software requests with assessment + resolution state."""
+    client = _make_client(coordinator, key_path)
+    reqs = _run(lambda: client.list_my_software_requests(status=status))
+    for r in reqs:
+        line = f"{r['request_id']}  {r['status']:9} {r['title']}"
+        if r.get("release_version"):
+            line += f"  (released in v{r['release_version']})"
+        click.echo(line)
+        if r.get("assessment"):
+            draft = " [AUTO-DRAFT — unratified]" if r.get("assessment_draft") else ""
+            summary = r["assessment"].get("summary") or r["assessment"]["security"]
+            click.echo(f"    assessment{draft}: {summary}")
+        if r.get("resolution_reason"):
+            click.echo(f"    resolution ({r.get('resolved_by', '?')}): {r['resolution_reason']}")
+    if not reqs:
+        click.echo("(no software requests yet)")
+
+
+# ----------------------------------------------------------------------------
+
+
 if __name__ == "__main__":
     main()
 

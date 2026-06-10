@@ -259,3 +259,73 @@ def test_request_model_omits_empty_hf_repo() -> None:
         return httpx.Response(201, json={"request_id": "mrq-2", "status": "available"})
 
     assert _tenant(handler).request_model("m-y", reason="x")["status"] == "available"
+
+
+# ---- software requests (code-plane requirements, §9 #46) --------------------
+
+
+def test_request_software_posts_signed_body() -> None:
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        seen["body"] = json.loads(request.content)
+        seen["signed"] = "Signature" in request.headers
+        return httpx.Response(
+            201,
+            json={
+                "request_id": "swr-1",
+                "status": "pending",
+                "title": "Ollama inference serving",
+            },
+        )
+
+    out = _tenant(handler).request_software(
+        "Ollama inference serving",
+        description="experiments need local inference",
+        reason="drift probes",
+    )
+    assert out["status"] == "pending"
+    assert seen["method"] == "POST"
+    assert seen["path"] == "/api/v0/software-requests"
+    assert seen["body"] == {
+        "title": "Ollama inference serving",
+        "description": "experiments need local inference",
+        "reason": "drift probes",
+    }
+    assert seen["signed"]
+
+
+def test_list_my_software_requests_passes_status_filter() -> None:
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["query"] = dict(request.url.params)
+        return httpx.Response(
+            200,
+            json={
+                "requests": [
+                    {
+                        "request_id": "swr-1",
+                        "status": "released",
+                        "title": "x",
+                        "release_version": "0.2.0",
+                    }
+                ]
+            },
+        )
+
+    out = _tenant(handler).list_my_software_requests(status="released")
+    assert out[0]["release_version"] == "0.2.0"
+    assert seen["path"] == "/api/v0/software-requests"
+    assert seen["query"] == {"status": "released"}
+
+
+def test_list_my_model_requests_returns_list() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v0/model-requests"
+        return httpx.Response(200, json={"requests": [{"request_id": "mrq-1"}]})
+
+    assert _tenant(handler).list_my_model_requests()[0]["request_id"] == "mrq-1"
