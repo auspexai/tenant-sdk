@@ -24,7 +24,7 @@ import httpx
 from pydantic import ValidationError
 
 from auspexai_tenant import __version__
-from auspexai_tenant.client import CoordinatorError, TenantClient, verify_transfer
+from auspexai_tenant.client import CoordinatorError, TenantClient
 from auspexai_tenant.manifest import Manifest
 from auspexai_tenant.receipts import decode_cbor
 from auspexai_tenant.signing import (
@@ -405,13 +405,109 @@ def experiment_attestation(
             click.echo(f"rekor incl.: NOT VERIFIED ({ri.error or 'inclusion checks failed'})")
     if verify_against_results:
         results = list(_run(lambda: list(client.iter_results(experiment_id))))
+        # v1 leaves bind the input hash; thread the attested values through so
+        # the check stays a RESULTS-reproduction check (input binding itself is
+        # the evidence bundle's `inputs_bound_ok`).
+        hashes = {
+            u["unit_id"]: u.get("unit_payload_sha256") or "" for u in att.units
+        }
+        ok_results = _check_results(att, results, unit_payload_hashes=hashes)
         click.echo(
-            f"vs results:  {'ok — re-pulled set reproduces the attested root' if _check_results(att, results) else 'MISMATCH'}"
+            f"vs results:  {'ok — re-pulled set reproduces the attested root' if ok_results else 'MISMATCH'}"
         )
     if not v.ok:
         click.echo("VERIFICATION FAILED", err=True)
         sys.exit(1)
     click.echo("verified ✓")
+
+
+@experiment.command("export")
+@click.argument("experiment_id")
+@_coord_opt
+@_key_opt
+@click.option(
+    "-o",
+    "--out",
+    "output",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Bundle output path (default: <experiment_id>-bundle.json).",
+)
+@click.option(
+    "--verify/--no-verify",
+    "do_verify",
+    default=True,
+    help="Run the full evidence-bundle verification chain after download (default on).",
+)
+@click.option(
+    "--check-rekor",
+    is_flag=True,
+    help="Also perform the ONLINE Rekor transparency-log inclusion check on the "
+    "bundled attestation (verification is otherwise fully offline).",
+)
+def experiment_export(
+    experiment_id: str,
+    coordinator: str,
+    key_path: Path,
+    output: Path | None,
+    do_verify: bool,
+    check_rekor: bool,
+) -> None:
+    """Take custody of the evidence bundle (EB-1, §9 #47).
+
+    Downloads the self-contained bundle (manifest + work-unit inputs +
+    consensus results + receipts + the Rekor-anchored attestation + a signed
+    proof-of-transfer) and verifies the full chain: custody signature,
+    attestation, root unification, completeness, input binding, and per-result
+    WORKER signatures. Collecting transfers data custody to YOU and arms
+    collection-anchored age-off coordinator-side — after age-off the network
+    can re-verify your bundle forever but can never re-deliver the payloads.
+    Your verified copy is the durable copy."""
+    from auspexai_tenant.evidence import verify_bundle
+
+    client = _make_client(coordinator, key_path)
+    bundle = _run(lambda: client.export(experiment_id))
+    out = output or Path(f"{experiment_id}-bundle.json")
+    out.write_text(json.dumps(bundle, indent=2))
+    t = bundle.get("transfer") or {}
+    click.echo(f"bundle:      {out} ({out.stat().st_size} bytes)")
+    click.echo(f"transfer:    {t.get('transfer_id')}  root_kind={t.get('root_kind')}")
+    click.echo(
+        f"contents:    {len(bundle.get('consensus_results') or [])} results, "
+        f"{len(bundle.get('work_units') or [])} work units, "
+        f"{len(bundle.get('receipts') or [])} receipts, "
+        f"attestation {'present' if bundle.get('attestation') else 'ABSENT (pre-completion export)'}"
+    )
+    if not do_verify:
+        return
+    v = verify_bundle(bundle, check_rekor=check_rekor)
+
+    def _fmt(value: bool | None) -> str:
+        if value is None:
+            return "n/a"
+        return "ok" if value else "FAIL"
+
+    click.echo(f"custody sig: {_fmt(v.transfer_signature_valid)}")
+    if v.attestation is not None:
+        click.echo(f"attestation: {_fmt(v.attestation.ok)}")
+    click.echo(f"root unify:  {_fmt(v.root_unified)}")
+    click.echo(f"complete:    {_fmt(v.completeness_ok)}")
+    click.echo(f"inputs:      {_fmt(v.inputs_bound_ok)}")
+    ws = v.worker_signatures
+    skipped = ws.skipped_aged_off + ws.skipped_missing_fields
+    click.echo(
+        f"worker sigs: {ws.verified} verified"
+        + (f", {len(ws.failed)} FAILED ({', '.join(ws.failed)})" if ws.failed else "")
+        + (f", {skipped} skipped" if skipped else "")
+    )
+    if not v.ok:
+        click.echo("VERIFICATION FAILED — do not trust this bundle.", err=True)
+        sys.exit(1)
+    click.echo("verified ✓ — you now hold the durable copy")
+    click.echo(
+        "Per the Terms of Participation, data custody + legal responsibility are now "
+        "yours; after age-off the network re-verifies but never re-delivers."
+    )
 
 
 @experiment.command("status")
@@ -467,48 +563,6 @@ def experiment_receipts(experiment_id: str, coordinator: str, key_path: Path) ->
         click.echo(f"{r.get('receipt_id')}  issued {r.get('issued_at', '')}")
     if not receipts_:
         click.echo("(no receipts yet)")
-
-
-@experiment.command("export")
-@click.argument("experiment_id")
-@_coord_opt
-@_key_opt
-@click.option(
-    "-o",
-    "--out",
-    "out_path",
-    type=click.Path(path_type=Path),
-    default=None,
-    help="Bundle output path (default: <experiment_id>-bundle.json).",
-)
-def experiment_export(
-    experiment_id: str, coordinator: str, key_path: Path, out_path: Path | None
-) -> None:
-    """Collect the offload bundle (consensus results + receipts + manifest + a
-    signed custody record) and save it. Collecting transfers data custody to you."""
-    client = _make_client(coordinator, key_path)
-    bundle = _run(lambda: client.export(experiment_id))
-    v = verify_transfer(bundle)
-    out = out_path or Path(f"{experiment_id}-bundle.json")
-    out.write_text(json.dumps(bundle, indent=2))
-    n_results = len(bundle.get("consensus_results") or [])
-    n_receipts = len(bundle.get("receipts") or [])
-    click.echo(f"Saved offload bundle to {out}: {n_results} result(s), {n_receipts} receipt(s).")
-    if v.valid:
-        click.echo(
-            f"Custody transfer VERIFIED — transfer {v.transfer_id}, "
-            f"signed by coordinator {v.coordinator_pubkey_hex[:16]}…"
-        )
-        click.echo(
-            "Per the Terms of Participation, data custody + legal responsibility are now yours."
-        )
-    else:
-        click.echo(
-            "WARNING: the custody-record signature did NOT verify against the "
-            "coordinator key. Do not trust this bundle.",
-            err=True,
-        )
-        sys.exit(1)
 
 
 def _load_attr(spec: str):

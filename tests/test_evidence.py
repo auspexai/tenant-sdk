@@ -1,0 +1,257 @@
+"""Evidence-bundle verification (EB-1, §9 #47) — the full custody chain.
+
+Builds synthetic bundles signed exactly as the coordinator + worker do
+(coordinator: COSE-Sign1 attestation + Ed25519 proof-of-transfer; worker:
+signing/result.py canonical-bytes convention) and exercises every named check
+of `verify_bundle`, including the failure modes the design doc ratified:
+external key pinning (D4), at-rest payload tamper (worker sigs, D2),
+input-binding tamper, and completeness (missing rows).
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from base64 import b64encode
+
+import cbor2
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+from auspexai_tenant.attestation import (
+    RESULT_SET_ALGORITHM_V1,
+    RESULT_SET_PREDICATE_TYPE_V1,
+    merkle_root,
+    unit_payload_sha256,
+)
+from auspexai_tenant.evidence import verify_bundle, verify_worker_signatures
+
+_ALG, _KID, _EDDSA = 1, 4, -8
+
+
+def _pub_hex(key: Ed25519PrivateKey) -> str:
+    return key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex()
+
+
+def _sign_v1_attestation(units: list[dict], key: Ed25519PrivateKey) -> dict:
+    """A bundle `attestation` block, COSE-signed as the coordinator's v1 path."""
+    root = merkle_root(units, algorithm=RESULT_SET_ALGORITHM_V1)
+    predicate = {
+        "merkle_root": root,
+        "algorithm": RESULT_SET_ALGORITHM_V1,
+        "experiment_id": "exp-label",
+        "tenant_id": "tenant-a",
+        "unit_count": len(units),
+        "units": sorted(units, key=lambda u: u["unit_id"]),
+    }
+    predicate_cbor = cbor2.dumps(predicate, canonical=True)
+    statement = {
+        "_type": "https://www.in-toto.io/Statement/v1",
+        "subject": [
+            {
+                "name": "auspexai:result-set/att-eb1",
+                "digest": {"sha256": hashlib.sha256(predicate_cbor).hexdigest()},
+            }
+        ],
+        "predicateType": RESULT_SET_PREDICATE_TYPE_V1,
+        "predicate": predicate_cbor,
+    }
+    statement_cbor = cbor2.dumps(statement, canonical=True)
+    protected = cbor2.dumps(
+        {_ALG: _EDDSA, _KID: _pub_hex(key).encode("ascii")}, canonical=True
+    )
+    sig_structure = cbor2.dumps(["Signature1", protected, b"", statement_cbor], canonical=True)
+    cose = cbor2.dumps([protected, {}, statement_cbor, key.sign(sig_structure)], canonical=True)
+    return {
+        "attestation_id": "att-eb1",
+        "merkle_root": root,
+        "algorithm": RESULT_SET_ALGORITHM_V1,
+        "cose_b64": b64encode(cose).decode(),
+        "signing_key_pubkey_hex": _pub_hex(key),
+        "rekor_log_index": 0,
+        "rekor_entry_uuid": "lab-mode-no-rekor",
+        "rekor_inclusion_proof": None,
+    }
+
+
+def _sign_worker_result(worker_key: Ed25519PrivateKey, r: dict) -> str:
+    body = {
+        "unit_id": r["unit_id"],
+        "worker_pubkey": r["worker_pubkey_hex"].lower(),
+        "completed_at": r["completed_at"],
+        "exit_code": int(r["exit_code"]),
+        "payload": r["payload"],
+    }
+    canonical = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+    return b64encode(worker_key.sign(canonical)).decode()
+
+
+def _make_bundle(
+    coordinator_key: Ed25519PrivateKey,
+    worker_key: Ed25519PrivateKey,
+    *,
+    n: int = 2,
+    with_attestation: bool = True,
+) -> dict:
+    work_units = [{"unit_id": f"u{i}", "payload": {"q": i}} for i in range(n)]
+    consensus = []
+    att_units = []
+    for i in range(n):
+        sem = hashlib.sha256(f"consensus-{i}".encode()).hexdigest()
+        r = {
+            "result_id": f"res-u{i}",
+            "unit_id": f"u{i}",
+            "semantic_hash": sem,
+            "payload": {"a": i},
+            "aged_off": False,
+            "worker_pubkey_hex": _pub_hex(worker_key),
+            "exit_code": 0,
+            "receipt_id": f"rcpt-u{i}",
+            "completed_at": f"2026-06-11T0{i}:00:00+00:00",
+        }
+        r["worker_signature"] = _sign_worker_result(worker_key, r)
+        consensus.append(r)
+        att_units.append(
+            {
+                "unit_id": f"u{i}",
+                "consensus_result_hash": sem,
+                "receipt_id": f"rcpt-u{i}",
+                "unit_payload_sha256": unit_payload_sha256({"q": i}),
+            }
+        )
+    bundle: dict = {
+        "schema": "auspexai-evidence-bundle/v1",
+        "experiment_id": "exp-123",
+        "manifest_hash": "ab" * 32,
+        "manifest": {"experiment_id": "exp-label"},
+        "work_units": work_units,
+        "consensus_results": consensus,
+        "receipts": [],
+        "attestation": None,
+    }
+    if with_attestation:
+        bundle["attestation"] = _sign_v1_attestation(att_units, coordinator_key)
+        root = bundle["attestation"]["merkle_root"]
+        root_kind = RESULT_SET_ALGORITHM_V1
+    else:
+        items = sorted((r["unit_id"], r["semantic_hash"]) for r in consensus)
+        root = hashlib.sha256(json.dumps(items, separators=(",", ":")).encode()).hexdigest()
+        root_kind = "flat-v0"
+    collected_by = "cd" * 32
+    collected_at = "2026-06-11T12:00:00+00:00"
+    record = f"{root}|{collected_by}|{collected_at}|{'ab' * 32}".encode()
+    bundle["transfer"] = {
+        "transfer_id": "xfer-test",
+        "result_set_root": root,
+        "root_kind": root_kind,
+        "attestation_id": "att-eb1" if with_attestation else None,
+        "collected_at": collected_at,
+        "collected_by_pubkey": collected_by,
+        "manifest_hash": "ab" * 32,
+        "receipt_count": 0,
+        "coordinator_signature": coordinator_key.sign(record).hex(),
+        "coordinator_pubkey_hex": _pub_hex(coordinator_key),
+    }
+    return bundle
+
+
+def _keys() -> tuple[Ed25519PrivateKey, Ed25519PrivateKey]:
+    return Ed25519PrivateKey.generate(), Ed25519PrivateKey.generate()
+
+
+def test_full_bundle_verifies():
+    ck, wk = _keys()
+    v = verify_bundle(_make_bundle(ck, wk))
+    assert v.transfer_signature_valid
+    assert v.attestation is not None and v.attestation.ok
+    assert v.root_unified is True
+    assert v.completeness_ok is True
+    assert v.inputs_bound_ok is True
+    assert v.worker_signatures.verified == 2 and not v.worker_signatures.failed
+    assert v.ok
+
+
+def test_external_pinning_rejects_unlisted_coordinator_key():
+    """D4: a valid signature by a key the bundle itself carries proves nothing —
+    pinning against an external signer list must fail an unlisted key."""
+    ck, wk = _keys()
+    bundle = _make_bundle(ck, wk)
+    v = verify_bundle(bundle, authorized_signers=["ef" * 32])
+    assert v.transfer_signature_valid  # the math is fine...
+    assert not v.transfer_signer_authorized  # ...but the key isn't pinned
+    assert not v.ok
+    # and with the real key listed, it passes.
+    ok = verify_bundle(bundle, authorized_signers=[_pub_hex(ck)])
+    assert ok.transfer_signer_authorized and ok.ok
+
+
+def test_tampered_payload_fails_worker_signature():
+    """D2: the worker signature is the only non-coordinator key in the chain —
+    an at-rest payload tamper must surface here."""
+    ck, wk = _keys()
+    bundle = _make_bundle(ck, wk)
+    bundle["consensus_results"][0]["payload"] = {"a": "TAMPERED"}
+    v = verify_bundle(bundle)
+    assert v.worker_signatures.failed == ["res-u0"]
+    assert not v.ok
+
+
+def test_tampered_work_unit_breaks_input_binding():
+    """Reproducibility triple, input leg: 'result R came from parameters P'."""
+    ck, wk = _keys()
+    bundle = _make_bundle(ck, wk)
+    bundle["work_units"][1]["payload"] = {"q": "NOT-WHAT-RAN"}
+    v = verify_bundle(bundle)
+    assert v.inputs_bound_ok is False
+    assert not v.ok
+
+
+def test_missing_result_breaks_completeness():
+    ck, wk = _keys()
+    bundle = _make_bundle(ck, wk)
+    bundle["consensus_results"].pop()
+    v = verify_bundle(bundle)
+    assert v.completeness_ok is False
+    assert not v.ok
+
+
+def test_flat_root_bundle_skips_attestation_checks():
+    """Pre-completion export: no attestation, flat custody root — tri-state
+    checks are n/a (None), and the bundle still verifies on its own terms."""
+    ck, wk = _keys()
+    v = verify_bundle(_make_bundle(ck, wk, with_attestation=False))
+    assert v.attestation is None
+    assert v.root_unified is None
+    assert v.completeness_ok is None
+    assert v.inputs_bound_ok is None
+    assert v.transfer_signature_valid and v.worker_signatures.ok
+    assert v.ok
+
+
+def test_aged_off_rows_are_skipped_not_failed():
+    ck, wk = _keys()
+    bundle = _make_bundle(ck, wk)
+    bundle["consensus_results"][0]["payload"] = None
+    bundle["consensus_results"][0]["aged_off"] = True
+    report = verify_worker_signatures(bundle["consensus_results"])
+    assert report.skipped_aged_off == 1
+    assert report.verified == 1
+    assert report.ok
+
+
+def test_unified_root_mismatch_detected():
+    """A custody record claiming attestation-root binding must actually match
+    the attestation's root."""
+    ck, wk = _keys()
+    bundle = _make_bundle(ck, wk)
+    fake_root = "00" * 32
+    t = bundle["transfer"]
+    record = (
+        f"{fake_root}|{t['collected_by_pubkey']}|{t['collected_at']}|{t['manifest_hash']}"
+    ).encode()
+    t["result_set_root"] = fake_root
+    t["coordinator_signature"] = ck.sign(record).hex()
+    v = verify_bundle(bundle)
+    assert v.transfer_signature_valid  # the record itself is well-signed...
+    assert v.root_unified is False  # ...but it doesn't bind the attestation
+    assert not v.ok

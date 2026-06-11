@@ -29,6 +29,12 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 RESULT_SET_ALGORITHM = "sha256-merkle-v0"
 RESULT_SET_PREDICATE_TYPE = "https://auspexai.network/result-set/v0"
+# EB-1 (§9 #47): v1 leaves additionally bind the INPUT (unit_payload_sha256) —
+# the reproducibility triple's input leg. Environment rides the signed
+# predicate, never the leaf. The SDK verifies BOTH versions, keyed off the
+# attestation's `algorithm`.
+RESULT_SET_ALGORITHM_V1 = "sha256-merkle-v1"
+RESULT_SET_PREDICATE_TYPE_V1 = "https://auspexai.network/result-set/v1"
 
 # Public Sigstore Rekor; overridable for a private instance. The not-yet-anchored
 # sentinel mirrors the coordinator's placeholder (receipts.rekor).
@@ -44,27 +50,37 @@ _COSE_HEADER_KID = 4
 _COSE_ALG_EDDSA = -8
 
 
-def _leaf_bytes(unit: dict[str, Any]) -> bytes:
-    canonical = json.dumps(
-        {
-            "unit_id": unit["unit_id"],
-            "consensus_result_hash": unit["consensus_result_hash"],
-            "receipt_id": unit["receipt_id"],
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
+def unit_payload_sha256(payload: dict[str, Any]) -> str:
+    """The shared input-hash convention (coordinator
+    `receipts/attestation.unit_payload_sha256`): SHA-256 over the canonical
+    re-serialization of a work-unit payload — what a v1 leaf binds."""
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _leaf_bytes(unit: dict[str, Any], *, v1: bool = False) -> bytes:
+    fields = {
+        "unit_id": unit["unit_id"],
+        "consensus_result_hash": unit["consensus_result_hash"],
+        "receipt_id": unit["receipt_id"],
+    }
+    if v1:
+        fields["unit_payload_sha256"] = unit.get("unit_payload_sha256") or ""
+    canonical = json.dumps(fields, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(_LEAF_PREFIX + canonical).digest()
 
 
-def merkle_root(units: list[dict[str, Any]]) -> str:
+def merkle_root(units: list[dict[str, Any]], *, algorithm: str = RESULT_SET_ALGORITHM) -> str:
     """Recompute the result-set Merkle root over `units` (each a dict with
-    unit_id / consensus_result_hash / receipt_id), sorted by unit_id. Identical
-    to the coordinator's construction so a match proves the set is unchanged."""
+    unit_id / consensus_result_hash / receipt_id — plus unit_payload_sha256 for
+    v1), sorted by unit_id. Identical to the coordinator's construction so a
+    match proves the set is unchanged. `algorithm` selects the leaf format
+    (sha256-merkle-v0 legacy | sha256-merkle-v1 EB-1 input-binding)."""
+    v1 = algorithm == RESULT_SET_ALGORITHM_V1
     if not units:
         return hashlib.sha256(_LEAF_PREFIX).hexdigest()
     ordered = sorted(units, key=lambda u: u["unit_id"])
-    level = [_leaf_bytes(u) for u in ordered]
+    level = [_leaf_bytes(u, v1=v1) for u in ordered]
     while len(level) > 1:
         if len(level) % 2 == 1:
             level.append(level[-1])
@@ -93,6 +109,9 @@ class ResultSetAttestation:
     # M9 leg 2: True when this is a checkpoint over a not-yet-complete experiment
     # (consensus-so-far). The same flag is in the COSE-signed predicate.
     partial: bool = False
+    # EB-1: the inclusion proof captured at anchor time (None when anchored
+    # pre-EB-1 or not yet anchored) — carried for offline verification.
+    rekor_inclusion_proof: dict[str, Any] | None = None
 
     @classmethod
     def from_response(cls, body: dict[str, Any]) -> ResultSetAttestation:
@@ -109,6 +128,7 @@ class ResultSetAttestation:
             rekor_log_index=body.get("rekor_log_index", 0),
             rekor_entry_uuid=body.get("rekor_entry_uuid", ""),
             partial=bool(body.get("partial", False)),
+            rekor_inclusion_proof=body.get("rekor_inclusion_proof"),
         )
 
 
@@ -357,7 +377,7 @@ def verify_attestation(
     `ok` is true only if all requested checks pass. To prove the *set itself* is
     the one you reduced, also recompute `merkle_root(your_pulled_units)` and
     compare — see `verify_against_results`."""
-    recomputed = merkle_root(att.units)
+    recomputed = merkle_root(att.units, algorithm=att.algorithm)
     root_matches_units = recomputed == att.merkle_root
 
     signature_valid, signer_hex, payload = _cose_verify(b64decode(att.cose_b64))
@@ -372,8 +392,13 @@ def verify_attestation(
     try:
         statement = cbor2.loads(payload)
         predicate = cbor2.loads(statement["predicate"])
+        expected_type = (
+            RESULT_SET_PREDICATE_TYPE_V1
+            if att.algorithm == RESULT_SET_ALGORITHM_V1
+            else RESULT_SET_PREDICATE_TYPE
+        )
         signed_root_matches = (
-            statement.get("predicateType") == RESULT_SET_PREDICATE_TYPE
+            statement.get("predicateType") == expected_type
             and predicate.get("merkle_root") == att.merkle_root
         )
     except Exception:
@@ -401,18 +426,30 @@ def verify_attestation(
     )
 
 
-def verify_against_results(att: ResultSetAttestation, results: list[dict[str, Any]]) -> bool:
+def verify_against_results(
+    att: ResultSetAttestation,
+    results: list[dict[str, Any]],
+    *,
+    unit_payload_hashes: dict[str, str] | None = None,
+) -> bool:
     """True iff a Merkle root recomputed over a *separately pulled* result set
     equals the attested root. `results` are result rows (e.g. from
     `TenantClient.iter_results`) carrying unit_id / semantic_hash / receipt_id;
     `semantic_hash` is the consensus_result_hash. This is the strong
-    reproducibility check: it proves the set you reduced is the attested one."""
+    reproducibility check: it proves the set you reduced is the attested one.
+
+    For a v1 attestation the leaves also bind the INPUT — pass
+    `unit_payload_hashes` ({unit_id: unit_payload_sha256(payload)}, e.g.
+    recomputed from the work units you submitted or from the evidence bundle's
+    `work_units`); the recompute then proves results AND parameters."""
+    hashes = unit_payload_hashes or {}
     units = [
         {
             "unit_id": r["unit_id"],
             "consensus_result_hash": r.get("semantic_hash") or r.get("consensus_result_hash"),
             "receipt_id": r["receipt_id"],
+            "unit_payload_sha256": r.get("unit_payload_sha256") or hashes.get(r["unit_id"]),
         }
         for r in results
     ]
-    return merkle_root(units) == att.merkle_root
+    return merkle_root(units, algorithm=att.algorithm) == att.merkle_root
