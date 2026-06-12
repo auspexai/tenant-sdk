@@ -219,9 +219,7 @@ def verify_bundle(
         attested = {(u["unit_id"], u["consensus_result_hash"]) for u in att.units}
         completeness = delivered == attested
         if att.algorithm == RESULT_SET_ALGORITHM_V1 and att.units:
-            payloads = {
-                w["unit_id"]: w.get("payload") for w in bundle.get("work_units") or []
-            }
+            payloads = {w["unit_id"]: w.get("payload") for w in bundle.get("work_units") or []}
             inputs_bound = all(
                 bool(u.get("unit_payload_sha256"))
                 and payloads.get(u["unit_id"]) is not None

@@ -408,9 +408,7 @@ def experiment_attestation(
         # v1 leaves bind the input hash; thread the attested values through so
         # the check stays a RESULTS-reproduction check (input binding itself is
         # the evidence bundle's `inputs_bound_ok`).
-        hashes = {
-            u["unit_id"]: u.get("unit_payload_sha256") or "" for u in att.units
-        }
+        hashes = {u["unit_id"]: u.get("unit_payload_sha256") or "" for u in att.units}
         ok_results = _check_results(att, results, unit_payload_hashes=hashes)
         click.echo(
             f"vs results:  {'ok — re-pulled set reproduces the attested root' if ok_results else 'MISMATCH'}"

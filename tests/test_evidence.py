@@ -57,9 +57,7 @@ def _sign_v1_attestation(units: list[dict], key: Ed25519PrivateKey) -> dict:
         "predicate": predicate_cbor,
     }
     statement_cbor = cbor2.dumps(statement, canonical=True)
-    protected = cbor2.dumps(
-        {_ALG: _EDDSA, _KID: _pub_hex(key).encode("ascii")}, canonical=True
-    )
+    protected = cbor2.dumps({_ALG: _EDDSA, _KID: _pub_hex(key).encode("ascii")}, canonical=True)
     sig_structure = cbor2.dumps(["Signature1", protected, b"", statement_cbor], canonical=True)
     cose = cbor2.dumps([protected, {}, statement_cbor, key.sign(sig_structure)], canonical=True)
     return {
