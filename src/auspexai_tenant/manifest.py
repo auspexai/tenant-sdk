@@ -14,6 +14,7 @@ re-accept the new hash.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -182,6 +183,26 @@ class Manifest(BaseModel):
 _PACKAGE_DIGEST_EXCLUDE = ("manifest.json", "manifest.json.sig")
 
 
+def _iter_package_files(package_dir: str | Path) -> Iterator[tuple[str, Path]]:
+    """Yield `(posix-relpath, path)` for every file that is part of the executor
+    package, sorted by relpath, applying the digest exclusions.
+
+    The single enumeration seam shared by `compute_package_digest` and the
+    archive builder (`auspexai_tenant.package.build_package_archive`) — using
+    one walk guarantees the uploaded archive and the `X-Package-Digest` header
+    can never disagree about which files a package contains.
+    """
+    root = Path(package_dir)
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root).as_posix()
+        parts = rel.split("/")
+        if rel in _PACKAGE_DIGEST_EXCLUDE or rel.endswith(".pyc") or "__pycache__" in parts:
+            continue
+        yield rel, path
+
+
 def compute_package_digest(package_dir: str | Path) -> str:
     """Digest over the executor *files* staged in `package_dir`, for the manifest's
     `executor.package_sha256` (the provenance pin the worker verifies).
@@ -194,15 +215,8 @@ def compute_package_digest(package_dir: str | Path) -> str:
     byte-for-byte (`auspexai_worker.provisioning.compute_package_digest`) — the
     shared contract is the format, not shared code (SDK is Apache, worker AGPL).
     """
-    root = Path(package_dir)
     lines: list[str] = []
-    for path in sorted(root.rglob("*")):
-        if not path.is_file():
-            continue
-        rel = path.relative_to(root).as_posix()
-        parts = rel.split("/")
-        if rel in _PACKAGE_DIGEST_EXCLUDE or rel.endswith(".pyc") or "__pycache__" in parts:
-            continue
+    for rel, path in _iter_package_files(package_dir):
         file_hash = hashlib.sha256(path.read_bytes()).hexdigest()
         lines.append(f"{rel}\x00{file_hash}")
     return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()

@@ -31,7 +31,7 @@ from auspexai_tenant.github_device_flow import (
     default_client_id,
     run_device_flow,
 )
-from auspexai_tenant.manifest import Manifest
+from auspexai_tenant.manifest import Manifest, compute_package_digest
 from auspexai_tenant.receipts import decode_cbor
 from auspexai_tenant.signing import (
     DEFAULT_KEY_PATH,
@@ -780,6 +780,47 @@ def software_list(status: str | None, coordinator: str, key_path: Path) -> None:
             click.echo(f"    resolution ({r.get('resolved_by', '?')}): {r['resolution_reason']}")
     if not reqs:
         click.echo("(no software requests yet)")
+
+
+# ----------------------------------------------------------------------------
+# executor-package upload (coordinator-served provisioning, §9 #40a)
+# ----------------------------------------------------------------------------
+
+
+@main.group()
+def package() -> None:
+    """Upload executor packages for coordinator-served provisioning (§9 #40)."""
+
+
+@package.command("upload")
+@click.argument("pkg_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option(
+    "--coordinator",
+    default="https://coord.auspexai.network",
+    show_default=True,
+    envvar="AUSPEXAI_COORDINATOR_URL",
+    help="Coordinator base URL (the public network by default, like `apply`).",
+)
+@_key_opt
+def package_upload(pkg_dir: Path, coordinator: str, key_path: Path) -> None:
+    """Upload the executor package staged in PKG_DIR to the coordinator.
+
+    Builds a deterministic tar.gz of the package tree (sorted entries, fixed
+    metadata — the same tree always produces identical bytes) excluding what
+    the package digest excludes (manifest.json[.sig], __pycache__/, *.pyc),
+    then POSTs it RFC 9421-signed with the tree digest in X-Package-Digest.
+    The digest printed is the value to pin as `executor.package_sha256` in
+    your manifest; the coordinator re-derives it and refuses a mismatch."""
+    client = _make_client(coordinator, key_path)
+    out = _run(lambda: client.upload_package(pkg_dir))
+    digest = out.get("package_digest") or compute_package_digest(pkg_dir)
+    status = out.get("status", "stored")
+    click.echo(f"package_digest: {digest}")
+    click.echo(f"status:         {status}")
+    if status == "already_exists":
+        click.echo("  the coordinator already holds this exact package tree.")
+    else:
+        click.echo("  pin this digest as executor.package_sha256 in your manifest before signing.")
 
 
 # ----------------------------------------------------------------------------

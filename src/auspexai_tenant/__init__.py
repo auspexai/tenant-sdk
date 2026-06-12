@@ -69,6 +69,7 @@ from auspexai_tenant.manifest import (
     WorkUnitSource,
     compute_package_digest,
 )
+from auspexai_tenant.package import build_package_archive
 from auspexai_tenant.receipts import (
     QuorumAgreement,
     Receipt,
@@ -174,6 +175,7 @@ __all__ = [
     "WorkUnit",
     "WorkUnitSource",
     "__version__",
+    "build_package_archive",
     "canonical_quantize",
     "canonicalize_floats",
     "compute_package_digest",

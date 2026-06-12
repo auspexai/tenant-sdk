@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -28,6 +29,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from auspexai_tenant.attestation import ResultSetAttestation
 from auspexai_tenant.http_signing import Rfc9421Auth
+from auspexai_tenant.manifest import compute_package_digest
+from auspexai_tenant.package import build_package_archive
 from auspexai_tenant.signing import MaintainerKey
 
 DEFAULT_TIMEOUT_S = 30.0
@@ -151,6 +154,38 @@ class TenantClient:
         signed custody record). Collecting it transfers data custody to the
         researcher and arms collection-anchored age-off coordinator-side."""
         return self._get(f"/api/v0/experiments/{experiment_id}/results/export")
+
+    # ---- executor packages (coordinator-served provisioning, §9 #40a) ----
+
+    def upload_package(self, package_dir: str | Path) -> dict[str, Any]:
+        """Upload the executor package staged in `package_dir` to the
+        coordinator (`POST /api/v0/packages`).
+
+        Builds the deterministic tar.gz (`build_package_archive`) and sends it
+        as a raw `application/gzip` body, RFC 9421-signed — the binary body is
+        bound into the signature via `Content-Digest` (SHA-256 of the raw
+        bytes), exactly like the JSON paths. `X-Package-Digest` carries the
+        package *tree* digest (`compute_package_digest`, the same value as the
+        manifest's `executor.package_sha256` pin); the coordinator re-derives
+        it over the extracted tree and refuses on mismatch (422). Returns the
+        coordinator's envelope — `{"package_digest": ..., "status": "stored"}`
+        on 201, `status: "already_exists"` on 200; 422 (digest mismatch) and
+        413 (too large) raise `CoordinatorError`."""
+        archive = build_package_archive(package_dir)
+        digest = compute_package_digest(package_dir)
+        url = f"{self._base}/api/v0/packages"
+        headers = {
+            "Content-Type": "application/gzip",
+            "X-Package-Digest": digest,
+        }
+        if self._client is None:
+            with httpx.Client(timeout=self._timeout) as c:
+                resp = c.post(url, auth=self._auth, content=archive, headers=headers)
+        else:
+            resp = self._client.post(url, auth=self._auth, content=archive, headers=headers)
+        if not resp.is_success:
+            raise CoordinatorError(resp.status_code, resp.text)
+        return resp.json()
 
     # ---- demand-board (model requests, M2 / §9 #32/#39) ----
 
