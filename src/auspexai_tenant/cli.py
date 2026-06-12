@@ -890,7 +890,13 @@ def _prompt_research_classes() -> list[str]:
     is_flag=True,
     help="Show the status of your existing applications instead of applying.",
 )
-@click.option("--tenant-id", default=None, help="Requested tenant id (e.g., my-lab).")
+@click.option(
+    "--tenant-id",
+    default=None,
+    help="Your PERMANENT research-tenant identifier — all your experiments "
+    "will live under it (think lab/org slug, e.g. 'my-lab'). You apply once; "
+    "running more experiments never needs another application.",
+)
 @click.option("--name", default=None, help="Contact name.")
 @click.option("--affiliation", default=None, help="Affiliation (lab / institution / independent).")
 @click.option(
@@ -939,7 +945,11 @@ def apply_cmd(
 
     # Collect the application fields BEFORE any key/device-flow work so a
     # missing flag never burns a device code.
-    tenant_id = _required_field(tenant_id, "--tenant-id", "Requested tenant id")
+    tenant_id = _required_field(
+        tenant_id,
+        "--tenant-id",
+        "Tenant id (permanent — all your experiments live under it; e.g. 'my-lab')",
+    )
     name = _required_field(name, "--name", "Contact name")
     affiliation = _required_field(
         affiliation, "--affiliation", "Affiliation (organization, or 'independent')"
