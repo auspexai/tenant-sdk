@@ -882,6 +882,11 @@ def bundle_table(
     except BundleVerificationError as e:
         click.echo(f"REFUSED: {e}", err=True)
         sys.exit(1)
+    # Residual non-scalar cells (lists, e.g. lexical.top_tokens) JSON-encode so
+    # the table is typed-column clean for Parquet and round-trips through CSV.
+    for col in df.columns:
+        if df[col].dtype == object:
+            df[col] = df[col].map(lambda v: json.dumps(v) if isinstance(v, (list, dict)) else v)
     suffix = out_path.suffix.lower()
     if suffix == ".csv":
         df.to_csv(out_path, index=False)

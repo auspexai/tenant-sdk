@@ -16,6 +16,7 @@ from click.testing import CliRunner
 from auspexai_tenant.cli import main as cli_main
 from auspexai_tenant.evidence import BundleVerificationError, load_verified
 from tests.test_evidence import _keys, _make_bundle, _pub_hex
+from tests.test_evidence import _sign_worker_result as _sign
 
 
 def test_load_verified_returns_tidy_frame():
@@ -115,3 +116,28 @@ def test_cli_bundle_verify_reports_and_exits(tmp_path):
     # pinned + wrong key → fail
     r = CliRunner().invoke(cli_main, ["bundle", "verify", str(p), "--signer", "ef" * 32])
     assert r.exit_code == 1
+
+
+def test_nested_payloads_flatten_and_write_parquet(tmp_path):
+    """Live-data regression (D6 bundle, 2026-06-12): vigiles payloads nest
+    dicts (payload.lexical.tokens) and carry lists (lexical.top_tokens) —
+    nested dicts must flatten to dot columns and the table writer must
+    JSON-encode residual lists so Parquet conversion never chokes."""
+    ck, wk = _keys()
+    bundle = _make_bundle(ck, wk)
+    for i, r in enumerate(bundle["consensus_results"]):
+        r["payload"] = {
+            "response_sha256": "ab" * 32,
+            "lexical": {"tokens": 4 + i, "top_tokens": [["alpha", 2], ["beta", 1]]},
+        }
+        r["worker_signature"] = _sign(wk, r)
+    df = load_verified(bundle)
+    assert list(df["output.lexical.tokens"]) == [4, 5]
+    assert isinstance(df["output.lexical.top_tokens"].iloc[0], list)  # faithful in pandas
+    p = tmp_path / "bundle.json"
+    p.write_text(json.dumps(bundle))
+    out = tmp_path / "nested.parquet"
+    r = CliRunner().invoke(cli_main, ["bundle", "table", str(p), "-o", str(out)])
+    assert r.exit_code == 0, r.output
+    loaded = pd.read_parquet(out)
+    assert json.loads(loaded["output.lexical.top_tokens"].iloc[0]) == [["alpha", 2], ["beta", 1]]

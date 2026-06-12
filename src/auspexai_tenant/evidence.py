@@ -270,6 +270,18 @@ class BundleVerificationError(Exception):
         super().__init__("evidence bundle failed verification: " + "; ".join(failed))
 
 
+def _flatten_into(row: dict[str, Any], prefix: str, value: Any) -> None:
+    """Flatten nested dicts into dot-separated columns (vigiles-style payloads
+    carry e.g. payload.lexical.tokens). Non-dict leaves — scalars AND lists —
+    land as the cell value; the table writer JSON-encodes residual non-scalars
+    so Parquet/CSV stay importable everywhere."""
+    if isinstance(value, dict) and value:
+        for k, v in value.items():
+            _flatten_into(row, f"{prefix}.{k}", v)
+    else:
+        row[prefix] = value
+
+
 def _read_bundle(bundle: Any) -> dict[str, Any]:
     """Accept a parsed bundle dict or a path to a saved bundle JSON file."""
     if isinstance(bundle, dict):
@@ -337,10 +349,8 @@ def load_verified(
             "semantic_hash": r.get("semantic_hash"),
             "aged_off": bool(r.get("aged_off")),
         }
-        for k, v in (inputs.get(r["unit_id"]) or {}).items():
-            row[f"input.{k}"] = v
-        for k, v in (r.get("payload") or {}).items():
-            row[f"output.{k}"] = v
+        _flatten_into(row, "input", inputs.get(r["unit_id"]) or {})
+        _flatten_into(row, "output", r.get("payload") or {})
         rows.append(row)
     df = pd.DataFrame(rows)
     if not df.empty:
