@@ -799,15 +799,72 @@ def _ensure_key(key_path: Path) -> tuple[MaintainerKey, bool]:
     return new_key, True
 
 
+def _stdin_isatty() -> bool:
+    """Is stdin interactive? A separate seam (not a bare sys.stdin.isatty()
+    call) so tests can simulate a tty under CliRunner's replaced stdin."""
+    return sys.stdin.isatty()
+
+
 def _required_field(value: str | None, flag: str, prompt_text: str) -> str:
     """Return `value`, prompting interactively when absent on a tty; error out
     (before any device-flow work) when absent non-interactively."""
     if value:
         return value
-    if sys.stdin.isatty():
+    if _stdin_isatty():
         return click.prompt(prompt_text)
     click.echo(f"ERROR: {flag} is required (or run interactively to be prompted).", err=True)
     sys.exit(1)
+
+
+# Research-class taxonomy (pinned contract with the coordinator): id → human
+# label. Order matters — it is the numbering shown in the interactive picker.
+RESEARCH_CLASSES: dict[str, str] = {
+    "behavioral_drift": "Longitudinal behavioral drift",
+    "eval_sweeps": "Deterministic eval sweeps",
+    "refusal_boundary_mapping": "Refusal/jailbreak-boundary mapping",
+    "cross_model_comparison": "Cross-model comparison",
+    "quantization_effects": "Quantization-effect studies",
+    "prompt_sensitivity": "Prompt-sensitivity analysis",
+    "other": "Other",
+}
+
+
+def _parse_research_class_selection(raw: str) -> list[str]:
+    """Map a '1,5'-style picker answer to taxonomy ids (order kept, deduped).
+
+    Empty input is a valid skip → []. Raises ValueError on anything that is
+    not a 1-based number within the taxonomy."""
+    ids = list(RESEARCH_CLASSES)
+    chosen: list[str] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if not part.isdigit() or not 1 <= int(part) <= len(ids):
+            raise ValueError(f"'{part}' is not a number between 1 and {len(ids)}")
+        cid = ids[int(part) - 1]
+        if cid not in chosen:
+            chosen.append(cid)
+    return chosen
+
+
+def _prompt_research_classes() -> list[str]:
+    """Interactive numbered multi-select over the research-class taxonomy.
+    Enter on an empty line skips (the free-text summary can then carry the
+    at-least-one requirement); invalid input re-prompts."""
+    click.echo("Research areas:")
+    for i, label in enumerate(RESEARCH_CLASSES.values(), start=1):
+        click.echo(f"  {i}. {label}")
+    while True:
+        raw = click.prompt(
+            "Select research areas (comma-separated numbers, e.g. 1,5)",
+            default="",
+            show_default=False,
+        )
+        try:
+            return _parse_research_class_selection(raw)
+        except ValueError as e:
+            click.echo(f"  {e} — try again (Enter to skip).")
 
 
 @main.command("apply")
@@ -836,7 +893,19 @@ def _required_field(value: str | None, flag: str, prompt_text: str) -> str:
 @click.option("--tenant-id", default=None, help="Requested tenant id (e.g., my-lab).")
 @click.option("--name", default=None, help="Contact name.")
 @click.option("--affiliation", default=None, help="Affiliation (lab / institution / independent).")
-@click.option("--summary", default=None, help="One-paragraph research summary.")
+@click.option(
+    "--research-class",
+    "research_classes",
+    multiple=True,
+    type=click.Choice(list(RESEARCH_CLASSES)),
+    help="Research area from the network taxonomy (repeatable). At least one "
+    "of --research-class / --summary is required.",
+)
+@click.option(
+    "--summary",
+    default=None,
+    help="Free-text research summary (optional when --research-class is given).",
+)
 def apply_cmd(
     coordinator: str,
     key_path: Path,
@@ -844,6 +913,7 @@ def apply_cmd(
     tenant_id: str | None,
     name: str | None,
     affiliation: str | None,
+    research_classes: tuple[str, ...],
     summary: str | None,
 ) -> None:
     """Apply for a tenant account, entirely from the CLI.
@@ -871,8 +941,29 @@ def apply_cmd(
     # missing flag never burns a device code.
     tenant_id = _required_field(tenant_id, "--tenant-id", "Requested tenant id")
     name = _required_field(name, "--name", "Contact name")
-    affiliation = _required_field(affiliation, "--affiliation", "Affiliation")
-    summary = _required_field(summary, "--summary", "Research summary (one paragraph)")
+    affiliation = _required_field(
+        affiliation, "--affiliation", "Affiliation (organization, or 'independent')"
+    )
+    classes = list(research_classes)
+    if _stdin_isatty():
+        if not classes:
+            classes = _prompt_research_classes()
+        if not summary:
+            summary = (
+                click.prompt(
+                    "Anything else about your research? (Enter to skip)",
+                    default="",
+                    show_default=False,
+                ).strip()
+                or None
+            )
+    if not classes and not summary:
+        click.echo(
+            "ERROR: describe your research — give at least one --research-class "
+            f"({', '.join(RESEARCH_CLASSES)}) and/or a --summary.",
+            err=True,
+        )
+        sys.exit(1)
 
     k, created = _ensure_key(key_path)
     if created:
@@ -899,6 +990,7 @@ def apply_cmd(
             contact_name=name,
             affiliation=affiliation,
             research_summary=summary,
+            research_classes=classes or None,
         )
     )
     click.echo(f"application {out['application_id']}: {out['status']}")

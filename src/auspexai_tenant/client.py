@@ -217,7 +217,8 @@ class TenantClient:
         requested_tenant_id: str,
         contact_name: str,
         affiliation: str,
-        research_summary: str,
+        research_summary: str | None = None,
+        research_classes: list[str] | None = None,
     ) -> dict[str, Any]:
         """Submit a tenant application signed by THIS client's key.
 
@@ -226,18 +227,25 @@ class TenantClient:
         application carries built-in proof-of-possession of the (possibly
         fresh) tenant key and no public key is ever hand-passed out of band.
         The GitHub access token (identity scope only) lets the coordinator
-        resolve who applied; the SDK never persists it. Returns
+        resolve who applied; the SDK never persists it.
+
+        At least one of `research_classes` (taxonomy ids, e.g.
+        "behavioral_drift") or `research_summary` (free text) is required;
+        empty/None values are omitted from the wire body. Returns
         {application_id, status} (HTTP 201)."""
-        return self._post(
-            "/api/v0/tenant-applications",
-            {
-                "github_access_token": github_access_token,
-                "requested_tenant_id": requested_tenant_id,
-                "contact_name": contact_name,
-                "affiliation": affiliation,
-                "research_summary": research_summary,
-            },
-        )
+        if not research_classes and not research_summary:
+            raise ValueError("at least one of research_classes or research_summary is required")
+        body: dict[str, Any] = {
+            "github_access_token": github_access_token,
+            "requested_tenant_id": requested_tenant_id,
+            "contact_name": contact_name,
+            "affiliation": affiliation,
+        }
+        if research_summary:
+            body["research_summary"] = research_summary
+        if research_classes:
+            body["research_classes"] = list(research_classes)
+        return self._post("/api/v0/tenant-applications", body)
 
     def my_tenant_applications(self) -> list[dict[str, Any]]:
         """The applications submitted by this signing key (the coordinator

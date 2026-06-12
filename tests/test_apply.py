@@ -235,6 +235,76 @@ def test_apply_for_tenant_posts_signed_body() -> None:
     }
 
 
+def _apply_handler(seen: dict):
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(201, json={"application_id": "app-1", "status": "pending"})
+
+    return handler
+
+
+def test_apply_for_tenant_body_carries_research_classes() -> None:
+    """`research_classes` (taxonomy ids) ride the POST body alongside the
+    summary, exactly as passed."""
+    seen: dict = {}
+    _tenant_client(_apply_handler(seen), MaintainerKey.generate()).apply_for_tenant(
+        github_access_token="gho_secret",
+        requested_tenant_id="drift-lab",
+        contact_name="Ada Lovelace",
+        affiliation="independent",
+        research_summary="Output drift across quantized local models.",
+        research_classes=["behavioral_drift", "quantization_effects"],
+    )
+    assert seen["body"]["research_classes"] == ["behavioral_drift", "quantization_effects"]
+    assert seen["body"]["research_summary"] == "Output drift across quantized local models."
+
+
+def test_apply_for_tenant_classes_only_omits_summary_field() -> None:
+    """Summary is now optional: classes alone satisfy the contract, and the
+    absent summary is OMITTED from the wire body (not sent as null/empty)."""
+    seen: dict = {}
+    _tenant_client(_apply_handler(seen), MaintainerKey.generate()).apply_for_tenant(
+        github_access_token="gho_secret",
+        requested_tenant_id="drift-lab",
+        contact_name="Ada Lovelace",
+        affiliation="independent",
+        research_classes=["eval_sweeps"],
+    )
+    assert seen["body"]["research_classes"] == ["eval_sweeps"]
+    assert "research_summary" not in seen["body"]
+
+
+def test_apply_for_tenant_summary_only_omits_classes_field() -> None:
+    """The legacy summary-only call still works, and empty classes are omitted
+    from the wire body."""
+    seen: dict = {}
+    _tenant_client(_apply_handler(seen), MaintainerKey.generate()).apply_for_tenant(
+        github_access_token="gho_secret",
+        requested_tenant_id="drift-lab",
+        contact_name="Ada Lovelace",
+        affiliation="independent",
+        research_summary="Output drift across quantized local models.",
+        research_classes=[],
+    )
+    assert "research_classes" not in seen["body"]
+
+
+def test_apply_for_tenant_neither_classes_nor_summary_raises_locally() -> None:
+    """The at-least-one contract is enforced client-side: no HTTP request is
+    ever made (the handler would 500 the test via _scripted-style strictness)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no request must be sent when both fields are missing")
+
+    with pytest.raises(ValueError, match="research_classes or research_summary"):
+        _tenant_client(handler, MaintainerKey.generate()).apply_for_tenant(
+            github_access_token="gho_secret",
+            requested_tenant_id="drift-lab",
+            contact_name="Ada Lovelace",
+            affiliation="independent",
+        )
+
+
 def test_my_tenant_applications_signed_get() -> None:
     seen: dict = {}
 
@@ -335,6 +405,149 @@ def test_cli_apply_generates_fresh_key_and_submits(
     # submission receipt + how to track
     assert "app-9" in result.output
     assert "apply --status" in result.output
+
+
+def test_cli_apply_research_class_flags_pass_through(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Repeatable --research-class flags reach apply_for_tenant as a list of
+    taxonomy ids, alongside the summary."""
+    _patch_device_flow(monkeypatch)
+    captured: dict = {}
+    _patch_apply(monkeypatch, captured)
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "apply",
+            "--coordinator",
+            COORD,
+            "--key",
+            str(tmp_path / "k.pem"),
+            *_APPLY_FIELDS,
+            "--research-class",
+            "behavioral_drift",
+            "--research-class",
+            "quantization_effects",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["research_classes"] == ["behavioral_drift", "quantization_effects"]
+    assert captured["research_summary"] == "Output drift across quantized local models."
+
+
+def test_cli_apply_classes_only_without_summary_is_ok(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Summary is optional once at least one research class is given: the
+    application proceeds with research_summary=None (omitted on the wire)."""
+    _patch_device_flow(monkeypatch)
+    captured: dict = {}
+    _patch_apply(monkeypatch, captured)
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "apply",
+            "--coordinator",
+            COORD,
+            "--key",
+            str(tmp_path / "k.pem"),
+            *_APPLY_FIELDS[:6],  # tenant-id / name / affiliation, NO --summary
+            "--research-class",
+            "refusal_boundary_mapping",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["research_classes"] == ["refusal_boundary_mapping"]
+    assert captured["research_summary"] is None
+    assert "app-9" in result.output
+
+
+def test_cli_apply_neither_classes_nor_summary_fails_fast(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no --research-class and no --summary (and no tty to prompt on),
+    apply errors out locally — before any key is written or a device code is
+    burned — with an error that names both remedies."""
+
+    def must_not_run(**kwargs):
+        raise AssertionError("device flow must not run when the research fields are missing")
+
+    monkeypatch.setattr(cli_mod, "run_device_flow", must_not_run)
+    key_path = tmp_path / "tenant_key.pem"
+    result = CliRunner().invoke(
+        main,
+        ["apply", "--coordinator", COORD, "--key", str(key_path), *_APPLY_FIELDS[:6]],
+    )
+    assert result.exit_code == 1
+    assert "--research-class" in result.output
+    assert "--summary" in result.output
+    assert not key_path.exists()
+
+
+def test_cli_apply_research_class_choice_validation(tmp_path: Path) -> None:
+    """--research-class is validated against the taxonomy ids (click.Choice):
+    an unknown id is a usage error, not a coordinator round-trip."""
+    result = CliRunner().invoke(
+        main,
+        [
+            "apply",
+            "--coordinator",
+            COORD,
+            "--key",
+            str(tmp_path / "k.pem"),
+            *_APPLY_FIELDS,
+            "--research-class",
+            "underwater_basket_weaving",
+        ],
+    )
+    assert result.exit_code == 2
+    assert "underwater_basket_weaving" in result.output
+    assert "behavioral_drift" in result.output  # the valid choices are listed
+
+
+def test_research_class_selection_parser() -> None:
+    """The interactive picker's number parsing: order kept, dedupe, whitespace
+    tolerated, empty = skip, out-of-range/non-numeric rejected."""
+    assert cli_mod._parse_research_class_selection("1,5") == [
+        "behavioral_drift",
+        "quantization_effects",
+    ]
+    assert cli_mod._parse_research_class_selection(" 7 , 2 , 7 ") == ["other", "eval_sweeps"]
+    assert cli_mod._parse_research_class_selection("") == []
+    assert cli_mod._parse_research_class_selection(" , ") == []
+    with pytest.raises(ValueError, match="'8'"):
+        cli_mod._parse_research_class_selection("8")
+    with pytest.raises(ValueError, match="'0'"):
+        cli_mod._parse_research_class_selection("0")
+    with pytest.raises(ValueError, match="'drift'"):
+        cli_mod._parse_research_class_selection("drift")
+
+
+def test_cli_apply_interactive_multi_select_then_optional_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On a tty with no research flags: numbered multi-select (bad input
+    re-prompts), then the summary prompt is OPTIONAL (Enter skips it)."""
+    monkeypatch.setattr(cli_mod, "_stdin_isatty", lambda: True)
+    _patch_device_flow(monkeypatch)
+    captured: dict = {}
+    _patch_apply(monkeypatch, captured)
+
+    result = CliRunner().invoke(
+        main,
+        ["apply", "--coordinator", COORD, "--key", str(tmp_path / "k.pem"), *_APPLY_FIELDS[:6]],
+        input="bogus\n1,3\n\n",  # invalid → re-prompt → pick 1+3 → skip summary
+    )
+    assert result.exit_code == 0, result.output
+    # the numbered menu showed the human labels
+    assert "1. Longitudinal behavioral drift" in result.output
+    assert "7. Other" in result.output
+    assert "Select research areas (comma-separated numbers, e.g. 1,5):" in result.output
+    assert "Anything else about your research? (Enter to skip):" in result.output
+    assert captured["research_classes"] == ["behavioral_drift", "refusal_boundary_mapping"]
+    assert captured["research_summary"] is None
 
 
 def test_cli_apply_reuses_existing_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
