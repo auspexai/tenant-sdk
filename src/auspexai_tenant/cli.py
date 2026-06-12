@@ -785,3 +785,109 @@ if __name__ == "__main__":
 
 # Re-export for module-level imports
 __all__ = ["ManifestSignature", "main"]
+
+
+@main.group()
+def bundle() -> None:
+    """Work with saved evidence bundles — re-verify forever, offline."""
+
+
+@bundle.command("verify")
+@click.argument("bundle_file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "--signer",
+    "signers",
+    multiple=True,
+    help="Authorized signer pubkey hex (repeatable) — pins the custody AND "
+    "attestation keys externally (e.g. the AUTHORIZED_SIGNERS.md keys). "
+    "Without it, a valid signature only proves self-consistency.",
+)
+@click.option(
+    "--check-rekor",
+    is_flag=True,
+    help="Also perform the ONLINE Rekor inclusion check (otherwise fully offline).",
+)
+def bundle_verify(bundle_file: Path, signers: tuple[str, ...], check_rekor: bool) -> None:
+    """Re-verify a saved evidence bundle — works forever, with no coordinator.
+
+    The network's custody doctrine is re-verify-forever/never-re-deliver:
+    hashes, receipts, and attestations are retained indefinitely (and the
+    public Rekor log holds the anchor even without us), so the bundle you
+    downloaded can be re-checked at any time, by anyone you hand it to."""
+    from auspexai_tenant.evidence import verify_bundle
+
+    data = json.loads(bundle_file.read_text(encoding="utf-8"))
+    v = verify_bundle(
+        data,
+        authorized_signers=list(signers) or None,
+        check_rekor=check_rekor,
+    )
+
+    def _fmt(value: bool | None) -> str:
+        return "n/a" if value is None else ("ok" if value else "FAIL")
+
+    click.echo(f"custody sig: {_fmt(v.transfer_signature_valid)}")
+    click.echo(
+        f"signer pin:  {_fmt(v.transfer_signer_authorized) if signers else 'not pinned (no --signer)'}"
+    )
+    if v.attestation is not None:
+        click.echo(f"attestation: {_fmt(v.attestation.ok)}")
+    click.echo(f"root unify:  {_fmt(v.root_unified)}")
+    click.echo(f"complete:    {_fmt(v.completeness_ok)}")
+    click.echo(f"inputs:      {_fmt(v.inputs_bound_ok)}")
+    ws = v.worker_signatures
+    skipped = ws.skipped_aged_off + ws.skipped_missing_fields
+    click.echo(
+        f"worker sigs: {ws.verified} verified"
+        + (f", {len(ws.failed)} FAILED ({', '.join(ws.failed)})" if ws.failed else "")
+        + (f", {skipped} skipped" if skipped else "")
+    )
+    if not v.ok:
+        click.echo("VERIFICATION FAILED — do not trust this bundle.", err=True)
+        sys.exit(1)
+    click.echo("verified ✓")
+
+
+@bundle.command("table")
+@click.argument("bundle_file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "-o",
+    "--out",
+    "out_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    required=True,
+    help="Output table; format by extension: .csv or .parquet.",
+)
+@click.option(
+    "--signer", "signers", multiple=True, help="Authorized signer pubkey hex (repeatable)."
+)
+@click.option("--check-rekor", is_flag=True, help="Also check Rekor inclusion online first.")
+def bundle_table(
+    bundle_file: Path, out_path: Path, signers: tuple[str, ...], check_rekor: bool
+) -> None:
+    """VERIFY the bundle, then write its results as a flat table.
+
+    One row per consensus result; work-unit inputs flatten to input.* columns
+    and result payloads to output.* — ready for pandas, Excel, Tableau, or R.
+    Refuses to write anything from a bundle that fails verification.
+    Needs the analysis extra: pip install 'auspexai-tenant[analysis]'."""
+    from auspexai_tenant.evidence import BundleVerificationError, load_verified
+
+    try:
+        df = load_verified(
+            bundle_file,
+            authorized_signers=list(signers) or None,
+            check_rekor=check_rekor,
+        )
+    except BundleVerificationError as e:
+        click.echo(f"REFUSED: {e}", err=True)
+        sys.exit(1)
+    suffix = out_path.suffix.lower()
+    if suffix == ".csv":
+        df.to_csv(out_path, index=False)
+    elif suffix == ".parquet":
+        df.to_parquet(out_path, index=False)
+    else:
+        click.echo(f"ERROR: unsupported table format {suffix!r} (use .csv or .parquet)", err=True)
+        sys.exit(1)
+    click.echo(f"verified ✓ → {out_path} ({len(df)} rows, {len(df.columns)} columns)")

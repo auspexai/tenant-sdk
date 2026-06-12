@@ -34,6 +34,17 @@ dev = [
     "pytest-cov>=4.1",
     "ruff==0.15.15",
     "jsonschema>=4.20",
+    # the evidence loader's analysis surface, exercised by tests
+    "pandas>=2.0",
+    "pyarrow>=15",
+]
+# EB-1 evidence loader (§9 #47 §6): `evidence.load_verified` -> a VERIFIED
+# DataFrame; CSV/Parquet via the `bundle table` CLI. Deliberately optional --
+# the core SDK stays light; analysis happens in the researcher's own tools.
+#   pip install auspexai-tenant[analysis]
+analysis = [
+    "pandas>=2.0",
+    "pyarrow>=15",
 ]
 
 [project.scripts]

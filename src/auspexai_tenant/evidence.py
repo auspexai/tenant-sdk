@@ -239,3 +239,111 @@ def verify_bundle(
         inputs_bound_ok=inputs_bound,
         worker_signatures=ws,
     )
+
+
+# ---- the evidence loader (§9 #47 §6) ----------------------------------------
+
+
+class BundleVerificationError(Exception):
+    """Raised by `load_verified` when the bundle fails verification. Carries
+    the full `BundleVerification` so the caller can see WHICH check failed —
+    but the loader never returns data from a bundle that doesn't verify."""
+
+    def __init__(self, verification: BundleVerification) -> None:
+        self.verification = verification
+        failed = []
+        v = verification
+        if not v.transfer_signature_valid:
+            failed.append("transfer signature")
+        if not v.transfer_signer_authorized:
+            failed.append("transfer signer not in authorized list")
+        if v.attestation is not None and not v.attestation.ok:
+            failed.append("attestation")
+        if v.root_unified is False:
+            failed.append("custody/attestation root mismatch")
+        if v.completeness_ok is False:
+            failed.append("delivered set != attested set")
+        if v.inputs_bound_ok is False:
+            failed.append("input binding (work-unit payload hashes)")
+        if v.worker_signatures.failed:
+            failed.append(f"worker signatures ({', '.join(v.worker_signatures.failed)})")
+        super().__init__("evidence bundle failed verification: " + "; ".join(failed))
+
+
+def _read_bundle(bundle: Any) -> dict[str, Any]:
+    """Accept a parsed bundle dict or a path to a saved bundle JSON file."""
+    if isinstance(bundle, dict):
+        return bundle
+    from pathlib import Path
+
+    return json.loads(Path(bundle).read_text(encoding="utf-8"))
+
+
+def load_verified(
+    bundle: Any,
+    *,
+    authorized_signers: list[str] | None = None,
+    check_rekor: bool = False,
+    rekor_url: str = DEFAULT_REKOR_URL,
+):
+    """Verify an evidence bundle, then return its results as a pandas
+    DataFrame — analysis that BEGINS from a cryptographically verified
+    dataset, in one call. Refuses (raises `BundleVerificationError`) if any
+    check fails; there is deliberately no force/skip flag — to inspect a bad
+    bundle, call `verify_bundle` directly.
+
+    `bundle` is the dict from `TenantClient.export()` or a path to the JSON
+    file `auspexai-tenant experiment export` saved.
+
+    One row per consensus result. Columns: `unit_id`, `result_id`,
+    `receipt_id`, `completed_at` (datetime), `semantic_hash`, `aged_off`,
+    plus the work-unit INPUT payload flattened under `input.*` and the result
+    OUTPUT payload flattened under `output.*` (NaN for aged-off rows — their
+    receipt + semantic_hash still verify, but the payload is gone; collection
+    is custody transfer). Round/sweep coordinates are tenant semantics — they
+    live in your `input.*` columns or your unit-id convention, not in the
+    platform's schema.
+
+    Requires the `analysis` extra: `pip install auspexai-tenant[analysis]`.
+    From here, `df.to_csv(...)` / `df.to_parquet(...)` open the Excel /
+    Tableau / R door — or use the `auspexai-tenant bundle table` CLI.
+    """
+    try:
+        import pandas as pd
+    except ImportError as e:  # pragma: no cover — exercised only without the extra
+        raise ImportError(
+            "load_verified needs pandas — install the analysis extra: "
+            "pip install 'auspexai-tenant[analysis]'"
+        ) from e
+
+    data = _read_bundle(bundle)
+    verification = verify_bundle(
+        data,
+        authorized_signers=authorized_signers,
+        check_rekor=check_rekor,
+        rekor_url=rekor_url,
+    )
+    if not verification.ok:
+        raise BundleVerificationError(verification)
+
+    inputs = {w["unit_id"]: w.get("payload") or {} for w in data.get("work_units") or []}
+    rows = []
+    for r in data.get("consensus_results") or []:
+        row: dict[str, Any] = {
+            "unit_id": r["unit_id"],
+            "result_id": r.get("result_id"),
+            "receipt_id": r.get("receipt_id"),
+            "completed_at": r.get("completed_at"),
+            "semantic_hash": r.get("semantic_hash"),
+            "aged_off": bool(r.get("aged_off")),
+        }
+        for k, v in (inputs.get(r["unit_id"]) or {}).items():
+            row[f"input.{k}"] = v
+        for k, v in (r.get("payload") or {}).items():
+            row[f"output.{k}"] = v
+        rows.append(row)
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df["completed_at"] = pd.to_datetime(df["completed_at"], format="ISO8601")
+        df = df.sort_values("unit_id", kind="stable").reset_index(drop=True)
+    return df
