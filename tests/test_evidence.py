@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from base64 import b64encode
+from base64 import b64decode, b64encode
 
 import cbor2
+import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
@@ -252,4 +253,70 @@ def test_unified_root_mismatch_detected():
     v = verify_bundle(bundle)
     assert v.transfer_signature_valid  # the record itself is well-signed...
     assert v.root_unified is False  # ...but it doesn't bind the attestation
+    assert not v.ok
+
+
+# ---- adversarial negative pass (2026-06-12, reviewer rec ~80% pre-tenant-#2) --
+
+
+def test_stripped_worker_sig_fields_fail_on_v1_bundle():
+    """Strip-the-signature tamper: removing worker_pubkey_hex/exit_code used to
+    pass vacuously (verified=0, failed=[], skipped_missing>0). On a v1-schema
+    bundle the members are guaranteed, so absence must FAIL verification."""
+    coord, worker = _keys()
+    bundle = _make_bundle(coord, worker)
+    for r in bundle["consensus_results"]:
+        r.pop("worker_pubkey_hex", None)
+        r.pop("exit_code", None)
+    v = verify_bundle(bundle)
+    assert v.worker_signatures.verified == 0
+    assert v.worker_signatures.skipped_missing_fields > 0
+    assert not v.worker_signatures.ok
+    assert not v.ok
+
+
+def test_stripped_fields_stay_lenient_without_schema_member():
+    """Pre-EB-1 bundles never carried the worker-sig members — absence there
+    is an old coordinator, not a tamper; the legacy lenient skip survives."""
+    coord, worker = _keys()
+    bundle = _make_bundle(coord, worker)
+    bundle.pop("schema")
+    for r in bundle["consensus_results"]:
+        r.pop("worker_pubkey_hex", None)
+        r.pop("exit_code", None)
+    v = verify_bundle(bundle)
+    assert v.worker_signatures.skipped_missing_fields > 0
+    assert v.worker_signatures.ok  # lenient: legacy bundle
+    assert v.ok
+
+
+def test_unknown_future_schema_refuses_with_upgrade_hint():
+    """Cross-version: an SDK must refuse a bundle schema it doesn't know
+    rather than verify whatever subset happens to parse."""
+    coord, worker = _keys()
+    bundle = _make_bundle(coord, worker)
+    bundle["schema"] = "auspexai-evidence-bundle/v2"
+    with pytest.raises(ValueError, match="upgrade the SDK"):
+        verify_bundle(bundle)
+
+
+def test_tampered_transfer_signature_fails():
+    coord, worker = _keys()
+    bundle = _make_bundle(coord, worker)
+    sig = bytearray(bytes.fromhex(bundle["transfer"]["coordinator_signature"]))
+    sig[0] ^= 0xFF
+    bundle["transfer"]["coordinator_signature"] = bytes(sig).hex()
+    v = verify_bundle(bundle)
+    assert not v.transfer_signature_valid
+    assert not v.ok
+
+
+def test_tampered_attestation_cose_fails():
+    coord, worker = _keys()
+    bundle = _make_bundle(coord, worker)
+    blob = bytearray(b64decode(bundle["attestation"]["cose_b64"]))
+    blob[-1] ^= 0xFF
+    bundle["attestation"]["cose_b64"] = b64encode(bytes(blob)).decode()
+    v = verify_bundle(bundle)
+    assert v.attestation is not None and not v.attestation.ok
     assert not v.ok

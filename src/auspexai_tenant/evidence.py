@@ -49,24 +49,32 @@ from auspexai_tenant.attestation import (
 
 EVIDENCE_BUNDLE_SCHEMA = "auspexai-evidence-bundle/v1"
 FLAT_ROOT_KIND = "flat-v0"
+BUNDLE_SCHEMA_V1 = "auspexai-evidence-bundle/v1"
 
 
 @dataclass(frozen=True)
 class WorkerSignatureReport:
     """Per-result worker-signature verification over the bundle's consensus
     rows. `failed` lists result_ids whose signature did NOT verify — any entry
-    is a hard failure. Skips are not failures: aged-off rows have no payload to
-    recompute over; missing-field rows come from pre-EB-1 coordinators that
-    didn't ship `worker_pubkey_hex`/`exit_code` in the bundle."""
+    is a hard failure. Aged-off skips are never failures (no payload to
+    recompute over). Missing-field skips are LENIENT only for pre-EB-1 bundles
+    (no `schema` member — those coordinators didn't ship
+    `worker_pubkey_hex`/`exit_code`); on a v1 bundle the members are
+    guaranteed, so a missing field is indistinguishable from a strip-the-
+    signature tamper and `strict` mode fails it — otherwise stripping the
+    fields would pass verification vacuously (verified=0, failed=[])."""
 
     verified: int
     failed: list[str]
     skipped_aged_off: int
     skipped_missing_fields: int
+    strict: bool = False
 
     @property
     def ok(self) -> bool:
-        return not self.failed
+        if self.failed:
+            return False
+        return not (self.strict and self.skipped_missing_fields)
 
 
 @dataclass(frozen=True)
@@ -135,10 +143,13 @@ def _canonical_result_bytes(r: dict[str, Any]) -> bytes:
     return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
-def verify_worker_signatures(consensus_results: list[dict[str, Any]]) -> WorkerSignatureReport:
+def verify_worker_signatures(
+    consensus_results: list[dict[str, Any]], *, strict: bool = False
+) -> WorkerSignatureReport:
     """Verify each consensus result's worker signature — the only signature in
     the chain not made by the coordinator (defense in depth against an at-rest
-    or coordinator-level tamper)."""
+    or coordinator-level tamper). `strict` makes missing signature fields a
+    failure (v1 bundles guarantee the members, so absence = tamper)."""
     verified = 0
     failed: list[str] = []
     skipped_aged = 0
@@ -161,6 +172,7 @@ def verify_worker_signatures(consensus_results: list[dict[str, Any]]) -> WorkerS
         failed=failed,
         skipped_aged_off=skipped_aged,
         skipped_missing_fields=skipped_missing,
+        strict=strict,
     )
 
 
@@ -177,6 +189,18 @@ def verify_bundle(
     pubkeys) to pin BOTH the custody and attestation signing keys externally —
     without it, a valid signature only proves consistency with the key the
     bundle itself carries."""
+    # Cross-version gate: refuse a bundle schema this SDK doesn't know rather
+    # than verifying whatever subset of it happens to parse (an old SDK
+    # "passing" a newer bundle would silently skip checks the newer schema
+    # carries). Pre-EB-1 bundles have no schema member and keep the lenient
+    # legacy path.
+    schema = bundle.get("schema")
+    if schema is not None and schema != BUNDLE_SCHEMA_V1:
+        raise ValueError(
+            f"unknown evidence-bundle schema {schema!r} — this auspexai-tenant "
+            f"version understands {BUNDLE_SCHEMA_V1!r}; upgrade the SDK to "
+            "verify this bundle"
+        )
     t = bundle["transfer"]
 
     # 1. proof-of-transfer signature + external pinning
@@ -227,8 +251,9 @@ def verify_bundle(
                 for u in att.units
             )
 
-    # 6. worker signatures
-    ws = verify_worker_signatures(consensus)
+    # 6. worker signatures — strict on v1 bundles (the members are guaranteed
+    # there, so a missing field is a strip-tamper, not an old coordinator).
+    ws = verify_worker_signatures(consensus, strict=schema is not None)
 
     return BundleVerification(
         transfer_signature_valid=transfer_sig_ok,
@@ -267,6 +292,11 @@ class BundleVerificationError(Exception):
             failed.append("input binding (work-unit payload hashes)")
         if v.worker_signatures.failed:
             failed.append(f"worker signatures ({', '.join(v.worker_signatures.failed)})")
+        if not v.worker_signatures.ok and not v.worker_signatures.failed:
+            failed.append(
+                f"worker signature fields missing on "
+                f"{v.worker_signatures.skipped_missing_fields} row(s) of a v1 bundle"
+            )
         super().__init__("evidence bundle failed verification: " + "; ".join(failed))
 
 
