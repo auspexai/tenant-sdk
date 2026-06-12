@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -575,6 +576,13 @@ def _load_attr(spec: str):
         click.echo(f"ERROR: expected 'module:attr', got {spec!r}", err=True)
         sys.exit(1)
     module_name, _, attr = spec.partition(":")
+    # Installed console scripts do NOT have the cwd on sys.path (unlike
+    # `python script.py`), so `--driver my_driver:build` next to the file
+    # failed unless the researcher knew to set PYTHONPATH (researcher-#0
+    # finding). The driver-by-your-side case is the documented norm — add cwd.
+    cwd = os.getcwd()
+    if cwd not in sys.path:
+        sys.path.insert(0, cwd)
     try:
         module = importlib.import_module(module_name)
         return getattr(module, attr)
