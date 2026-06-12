@@ -208,6 +208,43 @@ class TenantClient:
         params = {"status": status} if status else None
         return self._get("/api/v0/software-requests", params).get("requests") or []
 
+    # ---- tenant applications (apply-from-CLI onboarding, Option D) ----------
+
+    def apply_for_tenant(
+        self,
+        *,
+        github_access_token: str,
+        requested_tenant_id: str,
+        contact_name: str,
+        affiliation: str,
+        research_summary: str,
+    ) -> dict[str, Any]:
+        """Submit a tenant application signed by THIS client's key.
+
+        The signing key need not be registered yet: the coordinator verifies
+        the RFC 9421 signature against the request's own keyid, so the
+        application carries built-in proof-of-possession of the (possibly
+        fresh) tenant key and no public key is ever hand-passed out of band.
+        The GitHub access token (identity scope only) lets the coordinator
+        resolve who applied; the SDK never persists it. Returns
+        {application_id, status} (HTTP 201)."""
+        return self._post(
+            "/api/v0/tenant-applications",
+            {
+                "github_access_token": github_access_token,
+                "requested_tenant_id": requested_tenant_id,
+                "contact_name": contact_name,
+                "affiliation": affiliation,
+                "research_summary": research_summary,
+            },
+        )
+
+    def my_tenant_applications(self) -> list[dict[str, Any]]:
+        """The applications submitted by this signing key (the coordinator
+        scopes the list to the request's keyid). Each item carries
+        {application_id, status, resolution_reason, created_tenant_id}."""
+        return self._get("/api/v0/tenant-applications/mine").get("applications") or []
+
 
 def verify_transfer(bundle: dict[str, Any]) -> TransferVerification:
     """Verify the coordinator's Ed25519 signature on an export bundle's transfer

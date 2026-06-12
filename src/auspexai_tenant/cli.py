@@ -25,6 +25,12 @@ from pydantic import ValidationError
 
 from auspexai_tenant import __version__
 from auspexai_tenant.client import CoordinatorError, TenantClient
+from auspexai_tenant.github_device_flow import (
+    DeviceCode,
+    DeviceFlowError,
+    default_client_id,
+    run_device_flow,
+)
 from auspexai_tenant.manifest import Manifest
 from auspexai_tenant.receipts import decode_cbor
 from auspexai_tenant.signing import (
@@ -774,6 +780,126 @@ def software_list(status: str | None, coordinator: str, key_path: Path) -> None:
             click.echo(f"    resolution ({r.get('resolved_by', '?')}): {r['resolution_reason']}")
     if not reqs:
         click.echo("(no software requests yet)")
+
+
+# ----------------------------------------------------------------------------
+# tenant application (apply-from-CLI onboarding, Option D)
+# ----------------------------------------------------------------------------
+
+
+def _ensure_key(key_path: Path) -> tuple[MaintainerKey, bool]:
+    """Load the tenant key at `key_path`, generating one if missing.
+
+    Returns (key, created). A corrupt existing file is an error (we never
+    silently overwrite key material)."""
+    if key_path.exists():
+        return _load_key(key_path), False
+    new_key = MaintainerKey.generate()
+    new_key.save(key_path)
+    return new_key, True
+
+
+def _required_field(value: str | None, flag: str, prompt_text: str) -> str:
+    """Return `value`, prompting interactively when absent on a tty; error out
+    (before any device-flow work) when absent non-interactively."""
+    if value:
+        return value
+    if sys.stdin.isatty():
+        return click.prompt(prompt_text)
+    click.echo(f"ERROR: {flag} is required (or run interactively to be prompted).", err=True)
+    sys.exit(1)
+
+
+@main.command("apply")
+@click.option(
+    "--coordinator",
+    required=True,
+    help="Coordinator base URL (e.g., https://coord.auspexai.network).",
+)
+@click.option(
+    "--key",
+    "key_path",
+    type=click.Path(path_type=Path),
+    default=DEFAULT_KEY_PATH,
+    show_default=True,
+    help="Tenant key that signs the application (generated here if missing).",
+)
+@click.option(
+    "--status",
+    "show_status",
+    is_flag=True,
+    help="Show the status of your existing applications instead of applying.",
+)
+@click.option("--tenant-id", default=None, help="Requested tenant id (e.g., my-lab).")
+@click.option("--name", default=None, help="Contact name.")
+@click.option("--affiliation", default=None, help="Affiliation (lab / institution / independent).")
+@click.option("--summary", default=None, help="One-paragraph research summary.")
+def apply_cmd(
+    coordinator: str,
+    key_path: Path,
+    show_status: bool,
+    tenant_id: str | None,
+    name: str | None,
+    affiliation: str | None,
+    summary: str | None,
+) -> None:
+    """Apply for a tenant account, entirely from the CLI.
+
+    Generates (or reuses) your tenant key, verifies your GitHub identity via
+    Device Flow, and submits an application RFC 9421-signed by that key — the
+    coordinator learns your public key from the signature itself, so no pubkey
+    is ever hand-passed and proof-of-possession is built in. Track the outcome
+    with `auspexai-tenant apply --status`; once approved, the same key is your
+    tenant credential for every other command."""
+    if show_status:
+        client = _make_client(coordinator, key_path)
+        apps = _run(client.my_tenant_applications)
+        for a in apps:
+            click.echo(f"{a['application_id']}  {a['status']}")
+            if a.get("created_tenant_id"):
+                click.echo(f"    tenant: {a['created_tenant_id']}")
+            if a.get("resolution_reason"):
+                click.echo(f"    resolution: {a['resolution_reason']}")
+        if not apps:
+            click.echo("(no applications)")
+        return
+
+    # Collect the application fields BEFORE any key/device-flow work so a
+    # missing flag never burns a device code.
+    tenant_id = _required_field(tenant_id, "--tenant-id", "Requested tenant id")
+    name = _required_field(name, "--name", "Contact name")
+    affiliation = _required_field(affiliation, "--affiliation", "Affiliation")
+    summary = _required_field(summary, "--summary", "Research summary (one paragraph)")
+
+    k, created = _ensure_key(key_path)
+    if created:
+        click.echo(f"Generated a new tenant key at {key_path}")
+    click.echo(f"Signing key (becomes your tenant credential on approval): {k.pubkey_hex}")
+
+    def _show_code(code: DeviceCode) -> None:
+        click.echo("GitHub identity check — in any browser:")
+        click.echo(f"  1. open  {code.verification_uri}")
+        click.echo(f"  2. enter {code.user_code}")
+        click.echo("Waiting for authorization (Ctrl-C to abort)...")
+
+    try:
+        token = run_device_flow(on_code=_show_code, client_id=default_client_id())
+    except DeviceFlowError as e:
+        click.echo(f"ERROR: GitHub device flow failed: {e}", err=True)
+        sys.exit(1)
+
+    client = TenantClient(coordinator, k)
+    out = _run(
+        lambda: client.apply_for_tenant(
+            github_access_token=token,
+            requested_tenant_id=tenant_id,
+            contact_name=name,
+            affiliation=affiliation,
+            research_summary=summary,
+        )
+    )
+    click.echo(f"application {out['application_id']}: {out['status']}")
+    click.echo(f"  track with: auspexai-tenant apply --status --coordinator {coordinator}")
 
 
 # ----------------------------------------------------------------------------

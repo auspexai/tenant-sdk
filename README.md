@@ -18,6 +18,10 @@ pip install "auspexai-tenant @ git+https://github.com/auspexai/tenant-sdk.git@v0
 pip install "auspexai-tenant[analysis] @ git+https://github.com/auspexai/tenant-sdk.git@v0.5.1"
 ```
 
+**New researcher?** The full front door — install, apply for a tenant via
+`auspexai-tenant apply` (GitHub device flow, no key material to paste), and
+your first verified run — is [ONBOARDING.md](https://github.com/auspexai/.github/blob/main/ONBOARDING.md).
+
 ## The researcher lifecycle
 
 The SDK covers the whole arc. Each stage works today against the live
