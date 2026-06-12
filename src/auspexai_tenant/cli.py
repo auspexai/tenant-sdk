@@ -813,8 +813,11 @@ def _required_field(value: str | None, flag: str, prompt_text: str) -> str:
 @main.command("apply")
 @click.option(
     "--coordinator",
-    required=True,
-    help="Coordinator base URL (e.g., https://coord.auspexai.network).",
+    default="https://coord.auspexai.network",
+    show_default=True,
+    envvar="AUSPEXAI_COORDINATOR_URL",
+    help="Coordinator base URL. The public network is the default — apply is "
+    "the front-door command and must not require operator knowledge.",
 )
 @click.option(
     "--key",
