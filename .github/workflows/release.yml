@@ -1,0 +1,175 @@
+name: Release
+
+# Fires on version tags (e.g., v0.5.3). The tag is the trigger; the Maintainer
+# pushes it from a state where main-branch CI was green (GOVERNANCE §3.5:
+# release authority on researcher-installed repositories is Maintainer-only,
+# and PyPI publication rides this same gate via trusted publishing).
+#
+# The SDK is the researcher's VERIFIER — `bundle verify`, attestation checks,
+# Rekor inclusion. Its supply chain is part of the trust claim, so release
+# artifacts are Sigstore-signed like worker releases.
+#
+# Outputs a GitHub release with wheel + sdist + .sig/.cert per artifact +
+# SHA256SUMS; plus, when the PYPI_ENABLED repo variable is "true", a PyPI
+# publish via trusted publishing (no long-lived credentials).
+#
+# Coexists with notes-first releases: if a release was already created for
+# the tag (gh release create), this workflow attaches artifacts to it.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write   # create/update the GitHub release + upload assets
+  id-token: write   # OIDC for Sigstore keyless signing
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, sign, and publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout source at tag
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Build wheel + sdist
+        run: |
+          uv build
+          ls -la dist/
+
+      - name: Guard — version is a clean release matching the tag
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          WHEEL=$(ls dist/auspexai_tenant-*.whl)
+          BUILT_VERSION=$(basename "$WHEEL" | cut -d- -f2)
+          echo "tag=$TAG_VERSION  built=$BUILT_VERSION"
+          if [ "$BUILT_VERSION" = "0.0.0" ] || ! printf '%s' "$BUILT_VERSION" | grep -qE '^[0-9]+(\.[0-9]+)+$'; then
+            echo "::error::built version '$BUILT_VERSION' is not a clean release."
+            exit 1
+          fi
+          if [ "$BUILT_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::built version '$BUILT_VERSION' != tag '$TAG_VERSION'."
+            exit 1
+          fi
+          echo "version=$TAG_VERSION" >> "$GITHUB_ENV"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.5.0'
+
+      - name: Sign artifacts (Sigstore keyless via GitHub OIDC)
+        run: |
+          shopt -s nullglob
+          for artifact in dist/auspexai_tenant-*.whl dist/auspexai_tenant-*.tar.gz; do
+            cosign sign-blob --yes \
+              --output-signature "$artifact.sig" \
+              --output-certificate "$artifact.cert" \
+              "$artifact"
+          done
+          ls -la dist/
+
+      - name: Compute SHA256SUMS
+        run: |
+          (cd dist && sha256sum auspexai* | grep -vE '\.(sig|cert)$' > SHA256SUMS)
+          cat dist/SHA256SUMS
+
+      - name: Verify own signatures (self-check)
+        run: |
+          shopt -s nullglob
+          for artifact in dist/auspexai_tenant-*.whl dist/auspexai_tenant-*.tar.gz; do
+            cosign verify-blob \
+              --certificate-identity-regexp='^https://github\.com/auspexai/.+/\.github/workflows/.+@.+$' \
+              --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
+              --signature "$artifact.sig" \
+              --certificate "$artifact.cert" \
+              "$artifact"
+          done
+
+      - name: Upload dist for the PyPI job
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          retention-days: 7
+
+      - name: Create or update GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: ${{ env.version }}
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/auspexai_tenant-*.whl
+            dist/auspexai_tenant-*.tar.gz
+            dist/*.sig
+            dist/*.cert
+            dist/SHA256SUMS
+          body: |
+            AuspexAI Tenant SDK ${{ env.version }} — key generation, manifest
+            signing, experiment submission, and the evidence verify chain
+            (`bundle verify`, attestation + Rekor inclusion checks, the
+            verified evidence loader).
+
+            ## Install
+
+            ```bash
+            pip install auspexai_tenant-${{ env.version }}-py3-none-any.whl
+            # analysis extra (pandas/pyarrow for the evidence loader):
+            pip install 'auspexai_tenant-${{ env.version }}-py3-none-any.whl[analysis]'
+            ```
+
+            ## Verify before installing
+
+            ```bash
+            cosign verify-blob \
+              --certificate-identity-regexp='^https://github\.com/auspexai/.+/\.github/workflows/.+@.+$' \
+              --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
+              --signature auspexai_tenant-${{ env.version }}-py3-none-any.whl.sig \
+              --certificate auspexai_tenant-${{ env.version }}-py3-none-any.whl.cert \
+              auspexai_tenant-${{ env.version }}-py3-none-any.whl
+            ```
+
+            Trust roster: [AUTHORIZED_SIGNERS.md](https://github.com/auspexai/.github/blob/main/security/AUTHORIZED_SIGNERS.md).
+
+  pypi:
+    name: Publish to PyPI (trusted publishing)
+    needs: release
+    if: vars.PYPI_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: pypi
+    permissions:
+      id-token: write   # OIDC trusted publishing — no stored credentials
+
+    steps:
+      - name: Download built distributions
+        uses: actions/download-artifact@v7
+        with:
+          name: dist
+          path: dist
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
