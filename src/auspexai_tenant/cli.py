@@ -294,8 +294,11 @@ def receipts_show(path: Path) -> None:
 
 _coord_opt = click.option(
     "--coordinator",
-    required=True,
-    help="Coordinator base URL (e.g., https://coord.auspexai.network).",
+    default="https://coord.auspexai.network",
+    show_default=True,
+    envvar="AUSPEXAI_COORDINATOR_URL",
+    help="Coordinator base URL (the public network by default, like `apply`). "
+    "Override with --coordinator or AUSPEXAI_COORDINATOR_URL.",
 )
 _key_opt = click.option(
     "--key",
