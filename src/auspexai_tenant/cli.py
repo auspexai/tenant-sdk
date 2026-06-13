@@ -1287,6 +1287,21 @@ def apply_cmd(
         )
     )
     click.echo(f"application {out['application_id']}: {out['status']}")
+    existing = out.get("account_existing_tenants") or []
+    if existing:
+        # #6 multiplicity heads-up: multi-tenancy is allowed (review is the
+        # gate), so this is a warning, not a failure — but a second tenant for
+        # the same account should be deliberate, not an accidental re-apply.
+        click.echo(
+            f"  ⚠ your account already operates {len(existing)} tenant(s): {', '.join(existing)}",
+            err=True,
+        )
+        click.echo(
+            "    this application requests an ADDITIONAL tenant (a maintainer "
+            "reviews it). If that was unintended, contact the maintainer before "
+            "it is approved.",
+            err=True,
+        )
     click.echo(f"  track with: auspexai-tenant apply --status --coordinator {coordinator}")
 
 
