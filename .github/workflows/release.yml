@@ -112,11 +112,16 @@ jobs:
             dist/*.tar.gz
           retention-days: 7
 
-      - name: Create or update GitHub Release
+      # Create as a DRAFT with all assets attached, then publish as the final
+      # step — so the GitHub release object never exists in a published-but-
+      # asset-less state (consistent with the worker, whose published event
+      # drives the fleet banner). Drafts emit no `release.published`.
+      - name: Create GitHub Release (draft, assets attached)
         uses: softprops/action-gh-release@v3
         with:
           name: ${{ env.version }}
           tag_name: ${{ github.ref_name }}
+          draft: true
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
@@ -151,6 +156,12 @@ jobs:
             ```
 
             Trust roster: [AUTHORIZED_SIGNERS.md](https://github.com/auspexai/.github/blob/main/security/AUTHORIZED_SIGNERS.md).
+
+      - name: Publish the release (assets now attached)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --draft=false --latest
 
   pypi:
     name: Publish to PyPI (trusted publishing)
