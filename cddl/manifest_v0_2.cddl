@@ -1,0 +1,105 @@
+; AuspexAI Tenant Manifest schema, v0.2
+;
+; This CDDL definition is normative for the v0.2 AuspexAI manifest format. The
+; JSON Schema in schemas/manifest_v0_2.json mirrors it for JSON-tooling
+; ergonomics, but the CDDL is the authoritative spec for receipt-format
+; cross-references.
+;
+; v0.2 is a SUPERSET of v0.1: it adds four OPTIONAL members and bumps
+; schema_version. Enforcement keys on presence — a v0.2 manifest declaring none
+; is structurally a v0.1 manifest with the version bumped. v0.1 manifests stay
+; valid forever (no forced migration; re-verify-forever).
+;
+;   M3 / #13b  model.expected_gguf_sha256  — coordinator rejects a result whose
+;              worker-reported served digest != the declared digest (the
+;              declared model provably ran → cross-model PERFORMANCE unlock).
+;   M2         requires_real_execution      — keep real-exec units off echo workers.
+;   M1         inference_determinism        — worker pins temp/seed, refuses
+;              (retryably) outside the serving-version pin.
+;   M4         output_schema                — declared measurement type of a result.
+;
+; Per Principles & Scope §11 (schema-versioning policy), this file is immutable
+; once published. Major version bumps require an ADR.
+
+manifest = {
+  schema_version: "0.2",
+  tenant_id: tstr .regexp "^[a-z][a-z0-9-]{2,63}$",
+  tenant_maintainer_contact: tstr,
+  experiment_id: tstr .regexp "^[a-z][a-z0-9-]{2,127}$",
+  research_goal_paragraph: tstr,
+  ? research_class: research_class,   ; §9 #48 class-by-tier auto-approval
+  models: [+ model],
+  prompt_set_characteristics: tstr,
+  sensitive_content_flags: [* sensitive_flag],
+  ? approver_attestations: [+ attestation],
+  expected_duration_hours: number,
+  replication_factor: uint .gt 0,
+  work_unit_source: work_unit_source,
+  executor: executor,
+  reducer: reducer,
+  ? requires_real_execution: bool,            ; M2
+  ? inference_determinism: inference_determinism,  ; M1
+  ? output_schema: output_schema,             ; M4
+}
+
+model = {
+  id: tstr,
+  version: tstr,
+  local_weights_required: bool,
+  ? hf_repo: tstr,                ; M3-acquire: optional HuggingFace repo
+  ? hf_filename: tstr,            ; M3-acquire: optional exact pinned GGUF file
+  ? expected_gguf_sha256: tstr .regexp "^[a-f0-9]{64}$",  ; M3 / #13b: served-weights pin
+}
+
+research_class = "behavioral_drift" / "eval_sweeps" / "refusal_boundary_mapping"
+  / "cross_model_comparison" / "quantization_effects" / "prompt_sensitivity" / "other"
+
+inference_determinism = {
+  ? temperature: number,
+  ? seed: int,
+  ? serving_version_pin: tstr,    ; e.g. "ollama/0.17.7" — serve a match or refuse
+  ? hardware_class: tstr,         ; e.g. "cpu" / "cuda"
+}
+
+output_schema = {
+  measurement_level: "nominal" / "ordinal" / "interval" / "ratio",
+  ? shape: [* uint],             ; [] scalar / [N] vector / [R,C] matrix
+  ? dtype: tstr,                 ; e.g. "float32" / "int" / "string"
+}
+
+sensitive_flag = "dual_use" / "red_team" / "harmful_output_generation"
+
+attestation = {
+  approver_pubkey: tstr,
+  sig: tstr,
+}
+
+work_unit_source = static_source / http_source
+
+static_source = {
+  kind: "static",
+  tarball_sha256: tstr .regexp "^[a-f0-9]{64}$",
+}
+
+http_source = {
+  kind: "http",
+  url: tstr,
+}
+
+executor = {
+  command: [+ tstr],
+  ? image_sha256: tstr,
+  ? package_sha256: tstr,
+}
+
+reducer = builtin_reducer / custom_reducer
+
+builtin_reducer = {
+  kind: "builtin_hash_agreement",
+}
+
+custom_reducer = {
+  kind: "custom",
+  command: [+ tstr],
+  ? image_sha256: tstr,
+}

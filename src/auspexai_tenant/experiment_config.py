@@ -113,19 +113,21 @@ def manifest_dict_from_config(
     executor = cfg.section("executor")
     reducer = cfg.section("reducer")
     wus = cfg.section("work_unit_source")
+
+    model: dict[str, Any] = {
+        "id": req(e, "model_id", "experiment"),
+        "version": str(e.get("model_version", "1.0")),
+        "local_weights_required": bool(e.get("local_weights_required", True)),
+    }
+    if e.get("expected_gguf_sha256"):  # v0_2 / M3 (#13b): pin the served weights
+        model["expected_gguf_sha256"] = e["expected_gguf_sha256"]
+
     manifest: dict[str, Any] = {
-        "schema_version": "0.1",
         "tenant_id": req(e, "tenant_id", "experiment"),
         "tenant_maintainer_contact": req(e, "contact", "experiment"),
         "experiment_id": label,
         "research_goal_paragraph": req(e, "research_goal", "experiment"),
-        "models": [
-            {
-                "id": req(e, "model_id", "experiment"),
-                "version": str(e.get("model_version", "1.0")),
-                "local_weights_required": bool(e.get("local_weights_required", True)),
-            }
-        ],
+        "models": [model],
         "prompt_set_characteristics": req(e, "prompt_characteristics", "experiment"),
         "sensitive_content_flags": list(e.get("sensitive_content_flags") or []),
         # §9 #48: the declared research class (optional; omitted ⇒ human review).
@@ -147,4 +149,30 @@ def manifest_dict_from_config(
     attestations = cfg.raw.get("approver_attestations")
     if attestations:
         manifest["approver_attestations"] = attestations
+
+    # ── v0_2 members (all optional; emitted only when declared) ──────────────
+    if e.get("requires_real_execution"):  # M2
+        manifest["requires_real_execution"] = True
+    det = cfg.section("determinism")  # M1
+    if det:
+        manifest["inference_determinism"] = {
+            k: det[k]
+            for k in ("temperature", "seed", "serving_version_pin", "hardware_class")
+            if det.get(k) is not None
+        }
+    out = cfg.section("output")  # M4
+    if out.get("measurement_level"):
+        manifest["output_schema"] = {
+            k: out[k] for k in ("measurement_level", "shape", "dtype") if out.get(k) is not None
+        }
+
+    # schema_version bumps to 0.2 exactly when a v0_2 member is present, so an
+    # existing config (none declared) stays a valid 0.1 manifest unchanged.
+    uses_v0_2 = (
+        "expected_gguf_sha256" in model
+        or "requires_real_execution" in manifest
+        or "inference_determinism" in manifest
+        or "output_schema" in manifest
+    )
+    manifest["schema_version"] = "0.2" if uses_v0_2 else "0.1"
     return manifest

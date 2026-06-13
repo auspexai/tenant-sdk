@@ -46,6 +46,37 @@ class Model(BaseModel):
     local_weights_required: bool
     hf_repo: str | None = None
     hf_filename: str | None = None
+    # v0_2 / §9 #13b: the expected sha256 of the served GGUF weights. When set,
+    # the coordinator REJECTS a result whose worker-reported served digest does
+    # not match — "the declared model provably ran", which unlocks cross-model
+    # PERFORMANCE comparison (§11 amd 2). Omit ⇒ behavioral-only (status quo).
+    expected_gguf_sha256: Annotated[str | None, Field(pattern=r"^[a-f0-9]{64}$")] = None
+
+
+class InferenceDeterminism(BaseModel):
+    """v0_2 / M1: the determinism profile for a consensus inference run. The
+    worker pins `temperature`/`seed` and, when `serving_version_pin` is set,
+    hard-refuses a unit whose serving stack is outside the pin (the refusal is
+    retryable → re-offered to an eligible worker). Omit ⇒ worker defaults."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    temperature: float = 0.0
+    seed: int | None = None
+    serving_version_pin: str | None = None  # e.g. "ollama/0.17.7"
+    hardware_class: str | None = None  # e.g. "cpu" | "cuda"
+
+
+class OutputSchema(BaseModel):
+    """v0_2 / M4: the declared measurement type of a unit's result, so the SDK
+    loader + dashboard type results instead of guessing. Stevens typology;
+    start minimal (level + shape + dtype), grow later."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    measurement_level: Literal["nominal", "ordinal", "interval", "ratio"]
+    shape: list[int] | None = None  # [] scalar · [N] vector · [R,C] matrix
+    dtype: str | None = None  # e.g. "float32" | "int" | "string"
 
 
 class ApproverAttestation(BaseModel):
@@ -151,19 +182,23 @@ ResearchClass = Literal[
 """The §11 research-class taxonomy (§9 #48 keys auto-approval on it). Optional on
 the manifest; the coordinator is authoritative — it re-validates membership AND
 that the class is within the tenant's approved application classes, then decides
-auto-approve vs human review by class × tenant tier."""
+auto-approve vs human review by class x tenant tier."""
 
 
 class Manifest(BaseModel):
-    """AuspexAI tenant manifest, v0.1.
+    """AuspexAI tenant manifest, v0.1 / v0.2.
 
-    Mirrors schemas/manifest_v0_1.json. See sdk_license_boundary_position.md §6.2
-    for the published-contract framing.
+    Mirrors schemas/manifest_v0_1.json + schemas/manifest_v0_2.json (v0.2 is a
+    superset: four optional members M1-M4, enforcement keyed on presence). See
+    sdk_license_boundary_position.md §6.2 for the published-contract framing.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["0.1"]
+    # v0_2 accepts both: "0.1" stays valid forever (re-verify-forever; no forced
+    # migration). The v0_2 members are all OPTIONAL even under 0.2 — enforcement
+    # keys on PRESENCE, so a manifest declaring none is valid v0.2 unchanged.
+    schema_version: Literal["0.1", "0.2"]
     tenant_id: Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]{2,63}$")]
     tenant_maintainer_contact: EmailStr
     experiment_id: Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]{2,127}$")]
@@ -181,6 +216,16 @@ class Manifest(BaseModel):
     work_unit_source: WorkUnitSource
     executor: Executor
     reducer: Reducer
+    # v0_2 members (all optional; enforcement keys on presence):
+    # M2 — promote the field the coordinator already derives informally to a
+    # declared one: a real-execution experiment with no model requirement still
+    # must be kept off synthetic/echo workers.
+    requires_real_execution: bool = False
+    # M1 — the determinism profile (worker pins temp/seed, hard-refuses outside
+    # the serving-version pin).
+    inference_determinism: InferenceDeterminism | None = None
+    # M4 — the declared measurement type of a unit's result.
+    output_schema: OutputSchema | None = None
 
     @model_validator(mode="after")
     def _sensitive_requires_attestation(self) -> Manifest:
