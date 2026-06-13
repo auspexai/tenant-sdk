@@ -453,6 +453,19 @@ def experiment_attestation(
     help="Also perform the ONLINE Rekor transparency-log inclusion check on the "
     "bundled attestation (verification is otherwise fully offline).",
 )
+@click.option(
+    "--signer",
+    "signers",
+    multiple=True,
+    help="Hard-pin the custody + attestation signer to this pubkey hex "
+    "(repeatable). Default: a public-network bundle is grounded against the "
+    "SDK's embedded published keys automatically.",
+)
+@click.option(
+    "--no-pin",
+    is_flag=True,
+    help="Skip signer grounding — accept self-consistency only.",
+)
 def experiment_export(
     experiment_id: str,
     coordinator: str,
@@ -460,6 +473,8 @@ def experiment_export(
     output: Path | None,
     do_verify: bool,
     check_rekor: bool,
+    signers: tuple[str, ...],
+    no_pin: bool,
 ) -> None:
     """Take custody of the evidence bundle (EB-1, §9 #47).
 
@@ -494,7 +509,12 @@ def experiment_export(
     )
     if not do_verify:
         return
-    v = verify_bundle(bundle, check_rekor=check_rekor)
+    if signers and no_pin:
+        click.echo("ERROR: use --signer OR --no-pin, not both.", err=True)
+        sys.exit(1)
+    v = verify_bundle(
+        bundle, authorized_signers=list(signers) or None, no_pin=no_pin, check_rekor=check_rekor
+    )
 
     def _fmt(value: bool | None) -> str:
         if value is None:
@@ -502,6 +522,7 @@ def experiment_export(
         return "ok" if value else "FAIL"
 
     click.echo(f"custody sig: {_fmt(v.transfer_signature_valid)}")
+    click.echo(f"signer pin:  {_signer_pin_line(v)}")
     if v.attestation is not None:
         click.echo(f"attestation: {_fmt(v.attestation.ok)}")
     click.echo(f"root unify:  {_fmt(v.root_unified)}")
@@ -1081,22 +1102,52 @@ def bundle() -> None:
     """Work with saved evidence bundles — re-verify forever, offline."""
 
 
+def _signer_pin_line(v) -> str:
+    """One-line custody-signer grounding verdict from a BundleVerification.
+    Shared by `experiment export` and `bundle verify` so the trust claim reads
+    identically wherever the chain is checked."""
+    mode = v.signer_pin_mode
+    if mode == "known":
+        return "trusted ✓ — AuspexAI published key"
+    if mode == "explicit":
+        return (
+            "ok — pinned to your --signer"
+            if v.transfer_signer_authorized
+            else "FAIL — signer is NOT in your --signer set"
+        )
+    if mode == "skipped":
+        return "skipped (--no-pin) — self-consistency only"
+    return (
+        "unpinned — signer is not a known AuspexAI key; pass --signer <hex> "
+        "(see AUTHORIZED_SIGNERS.md) or --no-pin"
+    )
+
+
 @bundle.command("verify")
 @click.argument("bundle_file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option(
     "--signer",
     "signers",
     multiple=True,
-    help="Authorized signer pubkey hex (repeatable) — pins the custody AND "
-    "attestation keys externally (e.g. the AUTHORIZED_SIGNERS.md keys). "
-    "Without it, a valid signature only proves self-consistency.",
+    help="Authorized signer pubkey hex (repeatable) — HARD-pins the custody AND "
+    "attestation keys externally (e.g. a private coordinator, or a specific "
+    "AUTHORIZED_SIGNERS.md key). By default a public-network bundle is already "
+    "grounded against the SDK's embedded published keys.",
+)
+@click.option(
+    "--no-pin",
+    is_flag=True,
+    help="Skip signer grounding entirely — accept self-consistency only "
+    "(no claim that the signer is a known AuspexAI key).",
 )
 @click.option(
     "--check-rekor",
     is_flag=True,
     help="Also perform the ONLINE Rekor inclusion check (otherwise fully offline).",
 )
-def bundle_verify(bundle_file: Path, signers: tuple[str, ...], check_rekor: bool) -> None:
+def bundle_verify(
+    bundle_file: Path, signers: tuple[str, ...], no_pin: bool, check_rekor: bool
+) -> None:
     """Re-verify a saved evidence bundle — works forever, with no coordinator.
 
     The network's custody doctrine is re-verify-forever/never-re-deliver:
@@ -1105,10 +1156,14 @@ def bundle_verify(bundle_file: Path, signers: tuple[str, ...], check_rekor: bool
     downloaded can be re-checked at any time, by anyone you hand it to."""
     from auspexai_tenant.evidence import verify_bundle
 
+    if signers and no_pin:
+        click.echo("ERROR: use --signer OR --no-pin, not both.", err=True)
+        sys.exit(1)
     data = json.loads(bundle_file.read_text(encoding="utf-8"))
     v = verify_bundle(
         data,
         authorized_signers=list(signers) or None,
+        no_pin=no_pin,
         check_rekor=check_rekor,
     )
 
@@ -1116,9 +1171,7 @@ def bundle_verify(bundle_file: Path, signers: tuple[str, ...], check_rekor: bool
         return "n/a" if value is None else ("ok" if value else "FAIL")
 
     click.echo(f"custody sig: {_fmt(v.transfer_signature_valid)}")
-    click.echo(
-        f"signer pin:  {_fmt(v.transfer_signer_authorized) if signers else 'not pinned (no --signer)'}"
-    )
+    click.echo(f"signer pin:  {_signer_pin_line(v)}")
     if v.attestation is not None:
         click.echo(f"attestation: {_fmt(v.attestation.ok)}")
     click.echo(f"root unify:  {_fmt(v.root_unified)}")

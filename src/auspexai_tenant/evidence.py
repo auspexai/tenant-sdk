@@ -51,6 +51,18 @@ EVIDENCE_BUNDLE_SCHEMA = "auspexai-evidence-bundle/v1"
 FLAT_ROOT_KIND = "flat-v0"
 BUNDLE_SCHEMA_V1 = "auspexai-evidence-bundle/v1"
 
+# Published AuspexAI coordinator signing keys (the public network's). Each is
+# Fulcio-attested in Rekor and listed in AUTHORIZED_SIGNERS.md. The SDK embeds
+# them so verifying a bundle from the public network GROUNDS trust by default —
+# no hex-hunt — while a bundle signed by a key not in this set reports
+# "unpinned" (never a false pass; pass --signer for a private coordinator, or
+# --no-pin to accept self-consistency only). Annual rotation per §5.16: retired
+# keys STAY here (they verify historical bundles forever) and new ones are added.
+KNOWN_PUBLIC_SIGNERS: tuple[str, ...] = (
+    # 2026 — active. Rekor logIndex 1615064195; coord.auspexai.network.
+    "13c3b143c995764663e1016668cb7d8d24f4497fdc18d3f24b54a9a7529df453",
+)
+
 
 @dataclass(frozen=True)
 class WorkerSignatureReport:
@@ -91,6 +103,26 @@ class BundleVerification:
     completeness_ok: bool | None
     inputs_bound_ok: bool | None
     worker_signatures: WorkerSignatureReport
+    # How the custody signer was grounded. "explicit" = pinned to a caller
+    # --signer set; "known" = matched an embedded KNOWN_PUBLIC_SIGNERS key (the
+    # default for public-network bundles); "unpinned" = no pin matched (signer
+    # is the bundle's own self-attested key, e.g. a private coordinator);
+    # "skipped" = --no-pin. Only "explicit"/"known" mean externally grounded.
+    # `transfer_signer_authorized` (the ok-gate) stays True for unpinned/skipped
+    # — a soft default-pin never turns into a false FAIL.
+    signer_pin_mode: str = "unpinned"
+
+    @property
+    def signer_grounded(self) -> bool:
+        """True iff the custody signer was actually matched to a key external to
+        the bundle — an embedded published key ("known"), or an explicit
+        --signer set that the signer is IN. A failed explicit pin is not
+        grounded; unpinned/skipped never are."""
+        if self.signer_pin_mode == "known":
+            return True
+        if self.signer_pin_mode == "explicit":
+            return self.transfer_signer_authorized
+        return False
 
     @property
     def ok(self) -> bool:
@@ -180,15 +212,26 @@ def verify_bundle(
     bundle: dict[str, Any],
     *,
     authorized_signers: list[str] | None = None,
+    no_pin: bool = False,
     check_rekor: bool = False,
     rekor_url: str = DEFAULT_REKOR_URL,
 ) -> BundleVerification:
     """Run the full evidence-bundle verification chain (module docstring).
     Offline by default; `check_rekor=True` adds the online transparency-log
-    inclusion check. Pass `authorized_signers` (e.g. the AUTHORIZED_SIGNERS.md
-    pubkeys) to pin BOTH the custody and attestation signing keys externally —
-    without it, a valid signature only proves consistency with the key the
-    bundle itself carries."""
+    inclusion check.
+
+    Signer grounding (which key the custody + attestation signatures must come
+    from) has three modes:
+      - `authorized_signers` given → HARD pin to that set: a signer outside it
+        FAILS verification (use for a private coordinator, or to pin against a
+        specific AUTHORIZED_SIGNERS.md key).
+      - default (neither arg) → SOFT pin against the embedded
+        `KNOWN_PUBLIC_SIGNERS`: a public-network bundle is grounded
+        (`signer_pin_mode="known"`), an unrecognized signer is reported
+        `"unpinned"` but does NOT fail (it is still self-consistent).
+      - `no_pin=True` → skip grounding entirely (`"skipped"`, self-consistency
+        only).
+    A soft default-pin never turns a genuine bundle into a false FAIL."""
     # Cross-version gate: refuse a bundle schema this SDK doesn't know rather
     # than verifying whatever subset of it happens to parse (an old SDK
     # "passing" a newer bundle would silently skip checks the newer schema
@@ -214,12 +257,28 @@ def verify_bundle(
         transfer_sig_ok = True
     except (InvalidSignature, KeyError, ValueError):
         transfer_sig_ok = False
-    if authorized_signers is None:
+    # Signer grounding (see docstring). att_signers is the hard-pin set passed
+    # down to the attestation check — None means "don't hard-fail the
+    # attestation signer" (the soft default and --no-pin paths), since the
+    # attestation is signed by the same coordinator key as the transfer.
+    signer_hex = t.get("coordinator_pubkey_hex", "").lower()
+    att_signers: list[str] | None
+    if no_pin:
         signer_authorized = True
+        signer_pin_mode = "skipped"
+        att_signers = None
+    elif authorized_signers is not None:
+        signer_authorized = signer_hex in {s.lower() for s in authorized_signers}
+        signer_pin_mode = "explicit"
+        att_signers = authorized_signers
+    elif signer_hex in {k.lower() for k in KNOWN_PUBLIC_SIGNERS}:
+        signer_authorized = True
+        signer_pin_mode = "known"
+        att_signers = None
     else:
-        signer_authorized = t["coordinator_pubkey_hex"].lower() in {
-            s.lower() for s in authorized_signers
-        }
+        signer_authorized = True
+        signer_pin_mode = "unpinned"
+        att_signers = None
 
     consensus = bundle.get("consensus_results") or []
 
@@ -233,7 +292,7 @@ def verify_bundle(
         att = _attestation_from_bundle(block)
         att_verification = verify_attestation(
             att,
-            authorized_signers=authorized_signers,
+            authorized_signers=att_signers,
             check_rekor=check_rekor,
             rekor_url=rekor_url,
         )
@@ -263,6 +322,7 @@ def verify_bundle(
         completeness_ok=completeness,
         inputs_bound_ok=inputs_bound,
         worker_signatures=ws,
+        signer_pin_mode=signer_pin_mode,
     )
 
 

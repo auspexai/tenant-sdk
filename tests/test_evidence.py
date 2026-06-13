@@ -178,10 +178,46 @@ def test_external_pinning_rejects_unlisted_coordinator_key():
     v = verify_bundle(bundle, authorized_signers=["ef" * 32])
     assert v.transfer_signature_valid  # the math is fine...
     assert not v.transfer_signer_authorized  # ...but the key isn't pinned
+    assert v.signer_pin_mode == "explicit" and not v.signer_grounded
     assert not v.ok
     # and with the real key listed, it passes.
     ok = verify_bundle(bundle, authorized_signers=[_pub_hex(ck)])
     assert ok.transfer_signer_authorized and ok.ok
+    assert ok.signer_pin_mode == "explicit" and ok.signer_grounded
+
+
+def test_default_pin_unpinned_for_unknown_key():
+    """Default (no args): an unrecognized signer is reported UNPINNED but does
+    NOT fail — the bundle is still self-consistent."""
+    ck, wk = _keys()
+    v = verify_bundle(_make_bundle(ck, wk))
+    assert v.signer_pin_mode == "unpinned"
+    assert not v.signer_grounded
+    assert v.transfer_signer_authorized  # soft pin never turns into a false FAIL
+    assert v.ok
+
+
+def test_default_pin_grounds_known_public_key(monkeypatch):
+    """Default: a signer in the embedded KNOWN_PUBLIC_SIGNERS grounds trust
+    ('known') with no caller --signer — the public-network ergonomics win."""
+    import auspexai_tenant.evidence as ev
+
+    ck, wk = _keys()
+    monkeypatch.setattr(ev, "KNOWN_PUBLIC_SIGNERS", (_pub_hex(ck),))
+    v = verify_bundle(_make_bundle(ck, wk))
+    assert v.signer_pin_mode == "known"
+    assert v.signer_grounded
+    assert v.ok
+
+
+def test_no_pin_skips_grounding():
+    """--no-pin path: grounding is skipped entirely (self-consistency only),
+    still never a false FAIL."""
+    ck, wk = _keys()
+    v = verify_bundle(_make_bundle(ck, wk), no_pin=True)
+    assert v.signer_pin_mode == "skipped"
+    assert not v.signer_grounded
+    assert v.ok
 
 
 def test_tampered_payload_fails_worker_signature():

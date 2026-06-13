@@ -112,7 +112,9 @@ def test_cli_bundle_verify_reports_and_exits(tmp_path):
     r = CliRunner().invoke(cli_main, ["bundle", "verify", str(p)])
     assert r.exit_code == 0, r.output
     assert "verified ✓" in r.output
-    assert "not pinned" in r.output  # honest about unpinned verification
+    # honest about unpinned verification (random coordinator key, not an
+    # embedded KNOWN_PUBLIC_SIGNERS key → grounded=False, but still self-consistent)
+    assert "unpinned" in r.output
     # pinned + wrong key → fail
     r = CliRunner().invoke(cli_main, ["bundle", "verify", str(p), "--signer", "ef" * 32])
     assert r.exit_code == 1
