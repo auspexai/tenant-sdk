@@ -139,6 +139,21 @@ Reducer = Annotated[
 ]
 
 
+ResearchClass = Literal[
+    "behavioral_drift",
+    "eval_sweeps",
+    "refusal_boundary_mapping",
+    "cross_model_comparison",
+    "quantization_effects",
+    "prompt_sensitivity",
+    "other",
+]
+"""The §11 research-class taxonomy (§9 #48 keys auto-approval on it). Optional on
+the manifest; the coordinator is authoritative — it re-validates membership AND
+that the class is within the tenant's approved application classes, then decides
+auto-approve vs human review by class × tenant tier."""
+
+
 class Manifest(BaseModel):
     """AuspexAI tenant manifest, v0.1.
 
@@ -153,6 +168,10 @@ class Manifest(BaseModel):
     tenant_maintainer_contact: EmailStr
     experiment_id: Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]{2,127}$")]
     research_goal_paragraph: Annotated[str, Field(min_length=50, max_length=2000)]
+    # §9 #48: the declared research class. Optional for back-compat (a manifest
+    # without it routes to human review — the agent can't auto-clear an
+    # unclassified experiment).
+    research_class: ResearchClass | None = None
     models: Annotated[list[Model], Field(min_length=1)]
     prompt_set_characteristics: Annotated[str, Field(min_length=10, max_length=1000)]
     sensitive_content_flags: list[SensitiveContentFlag] = Field(default_factory=list)

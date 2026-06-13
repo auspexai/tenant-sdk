@@ -128,6 +128,8 @@ def manifest_dict_from_config(
         ],
         "prompt_set_characteristics": req(e, "prompt_characteristics", "experiment"),
         "sensitive_content_flags": list(e.get("sensitive_content_flags") or []),
+        # §9 #48: the declared research class (optional; omitted ⇒ human review).
+        **({"research_class": e["research_class"]} if e.get("research_class") else {}),
         "expected_duration_hours": float(e.get("duration_hours", 1)),
         "replication_factor": int(e.get("replication", 1)),
         "work_unit_source": {

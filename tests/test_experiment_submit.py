@@ -188,3 +188,33 @@ def test_experiment_build_unique_label_and_missing_field(tmp_path: Path):
     r = CliRunner().invoke(main, ["experiment", "build", str(pkg)])
     assert r.exit_code == 0, r.output
     assert json.loads((pkg / "manifest.json").read_text())["experiment_id"].startswith("lab-y-")
+
+
+def test_experiment_build_maps_research_class(tmp_path: Path):
+    from auspexai_tenant.manifest import Manifest
+
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "executor.py").write_text("# stub\n")
+    (tmp_path / "experiment.toml").write_text(
+        '[experiment]\nlabel = "lab-z"\ntenant_id = "lab"\ncontact = "you@lab.org"\n'
+        'model_id = "m"\nresearch_class = "behavioral_drift"\n'
+        'research_goal = "' + ("x" * 60) + '"\nprompt_characteristics = "neutral probe panel"\n'
+        '[executor]\ncommand = ["python", "executor.py"]\n[reducer]\nkind = "builtin_hash_agreement"\n'
+    )
+    r = CliRunner().invoke(main, ["experiment", "build", str(pkg), "--exact-label"])
+    assert r.exit_code == 0, r.output
+    m = json.loads((pkg / "manifest.json").read_text())
+    assert m["research_class"] == "behavioral_drift"
+    Manifest.model_validate(m)  # the Literal accepts it
+
+
+def test_manifest_rejects_unknown_research_class():
+    from pydantic import ValidationError
+
+    from auspexai_tenant.manifest import Manifest
+
+    base = json.loads((FIXTURES / "valid_minimal.json").read_text())
+    base["research_class"] = "not_a_class"
+    with pytest.raises(ValidationError):
+        Manifest.model_validate(base)
