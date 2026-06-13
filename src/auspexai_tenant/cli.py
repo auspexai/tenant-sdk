@@ -629,6 +629,72 @@ def _load_key(key_path: Path):
         sys.exit(1)
 
 
+@experiment.command("build")
+@click.argument("pkg_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="experiment.toml path (default: next to PKG_DIR).",
+)
+@click.option(
+    "--exact-label",
+    is_flag=True,
+    help="Use [experiment].label verbatim (no unique timestamp suffix).",
+)
+@click.option(
+    "-o",
+    "--out",
+    "out_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Manifest output path (default: PKG_DIR/manifest.json).",
+)
+def experiment_build(
+    pkg_dir: Path, config_path: Path | None, exact_label: bool, out_path: Path | None
+) -> None:
+    """Assemble PKG_DIR/manifest.json from experiment.toml — the GENERIC build,
+    no per-tenant build.py.
+
+    Reads [experiment]/[executor]/[reducer]/[work_unit_source], computes the
+    package digest over PKG_DIR, stamps a unique label (unless --exact-label),
+    validates the manifest, and writes it. Then `experiment submit PKG_DIR`."""
+    from auspexai_tenant.experiment_config import (
+        load_experiment_config,
+        make_unique_label,
+        manifest_dict_from_config,
+    )
+
+    cfg = load_experiment_config(config_path or pkg_dir.parent)
+    base = cfg.label
+    if not base:
+        click.echo(
+            "ERROR: experiment.toml [experiment].label is required "
+            "(looked next to PKG_DIR; pass --config to point elsewhere).",
+            err=True,
+        )
+        sys.exit(1)
+    label = base if exact_label else make_unique_label(base)
+    digest = compute_package_digest(pkg_dir)
+    try:
+        m = manifest_dict_from_config(cfg, package_sha256=digest, label=label)
+    except ValueError as e:  # a missing/empty required field, named by table+key
+        click.echo(f"ERROR: {e}", err=True)
+        sys.exit(1)
+    try:
+        Manifest.model_validate(m)
+    except ValidationError as e:  # ValidationError is-a ValueError → check it first
+        click.echo(f"ERROR: the assembled manifest failed v0.1 validation:\n{e}", err=True)
+        sys.exit(1)
+    out = out_path or (pkg_dir / "manifest.json")
+    out.write_text(json.dumps(m, indent=2) + "\n")
+    click.echo(f"manifest:   {out}")
+    click.echo(f"label:      {label}")
+    click.echo(f"package:    {digest[:16]}…")
+    click.echo(f"next:       auspexai-tenant experiment submit {pkg_dir} --key <key>")
+
+
 @experiment.command("submit")
 @click.argument("pkg_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.option(

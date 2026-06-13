@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -128,3 +129,62 @@ def test_resolve_by_exp_id_skips_listing():
 def test_resolve_unknown_label_exits():
     with pytest.raises(SystemExit):
         cli_mod._resolve_experiment(_ResolveClient(), "nope")
+
+
+# ---- experiment build (generic manifest assembly) -------------------------
+
+
+def test_experiment_build_assembles_valid_manifest(tmp_path: Path):
+    """`experiment build` writes a schema-valid pkg/manifest.json from
+    experiment.toml — the generic build, no per-tenant build.py."""
+    from auspexai_tenant.manifest import Manifest
+
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "executor.py").write_text("# stub executor\n")
+    (tmp_path / "experiment.toml").write_text(
+        "[experiment]\n"
+        'label = "lab-x"\n'
+        'tenant_id = "lab"\n'
+        'contact = "you@lab.org"\n'
+        'model_id = "gemma-3-1b"\n'
+        'research_goal = "' + ("a deterministic behavioral probe panel " * 3) + '"\n'
+        'prompt_characteristics = "neutral instruction-following probes"\n'
+        "[executor]\n"
+        'command = ["python", "executor.py"]\n'
+        "[reducer]\n"
+        'kind = "builtin_hash_agreement"\n'
+    )
+    r = CliRunner().invoke(main, ["experiment", "build", str(pkg), "--exact-label"])
+    assert r.exit_code == 0, r.output
+    m = json.loads((pkg / "manifest.json").read_text())
+    Manifest.model_validate(m)  # schema-valid
+    assert m["experiment_id"] == "lab-x"  # --exact-label kept it verbatim
+    assert m["models"][0]["id"] == "gemma-3-1b"
+    assert m["executor"]["command"] == ["python", "executor.py"]
+    assert len(m["executor"]["package_sha256"]) == 64  # digest over pkg/
+
+
+def test_experiment_build_unique_label_and_missing_field(tmp_path: Path):
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "executor.py").write_text("# stub\n")
+    # missing tenant_id → a clear error naming the table + key
+    (tmp_path / "experiment.toml").write_text(
+        '[experiment]\nlabel = "lab-y"\ncontact = "you@lab.org"\nmodel_id = "m"\n'
+        'research_goal = "' + ("x" * 60) + '"\nprompt_characteristics = "neutral probe panel"\n'
+        '[executor]\ncommand = ["python", "executor.py"]\n[reducer]\nkind = "builtin_hash_agreement"\n'
+    )
+    r = CliRunner().invoke(main, ["experiment", "build", str(pkg)])
+    assert r.exit_code == 1
+    assert "tenant_id" in r.output
+
+    # default (no --exact-label) stamps a unique suffix on the label.
+    (tmp_path / "experiment.toml").write_text(
+        '[experiment]\nlabel = "lab-y"\ntenant_id = "lab"\ncontact = "you@lab.org"\nmodel_id = "m"\n'
+        'research_goal = "' + ("x" * 60) + '"\nprompt_characteristics = "neutral probe panel"\n'
+        '[executor]\ncommand = ["python", "executor.py"]\n[reducer]\nkind = "builtin_hash_agreement"\n'
+    )
+    r = CliRunner().invoke(main, ["experiment", "build", str(pkg)])
+    assert r.exit_code == 0, r.output
+    assert json.loads((pkg / "manifest.json").read_text())["experiment_id"].startswith("lab-y-")
