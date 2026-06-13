@@ -476,6 +476,12 @@ def experiment_export(
     client = _make_client(coordinator, key_path)
     bundle = _run(lambda: client.export(experiment_id))
     out = output or Path(f"{experiment_id}-bundle.json")
+    # The coordinator already delivered (and armed collection age-off) by the
+    # time we write, so a missing -o parent dir must NOT lose the bundle: make
+    # the parent before writing. Re-export re-delivers idempotently until
+    # age-off, but the researcher shouldn't have to know that to recover.
+    if out.parent and not out.parent.exists():
+        out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(bundle, indent=2))
     t = bundle.get("transfer") or {}
     click.echo(f"bundle:      {out} ({out.stat().st_size} bytes)")
@@ -1170,6 +1176,8 @@ def bundle_table(
     for col in df.columns:
         if df[col].dtype == object:
             df[col] = df[col].map(lambda v: json.dumps(v) if isinstance(v, (list, dict)) else v)
+    if out_path.parent and not out_path.parent.exists():
+        out_path.parent.mkdir(parents=True, exist_ok=True)
     suffix = out_path.suffix.lower()
     if suffix == ".csv":
         df.to_csv(out_path, index=False)

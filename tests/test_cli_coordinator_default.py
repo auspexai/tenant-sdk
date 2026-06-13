@@ -61,3 +61,22 @@ def test_coord_opt_flag_beats_env(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     assert result.exit_code == 0, result.output
     assert seen["coordinator"] == "https://coord.flag.test"
+
+
+def test_experiment_export_creates_missing_parent_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`export -o nested/dir/bundle.json` must not lose a delivered bundle to a
+    FileNotFoundError — the coordinator already armed collection by then."""
+
+    class FakeClient:
+        def export(self, experiment_id: str) -> dict[str, object]:
+            return {"transfer": {"transfer_id": "t-1", "root_kind": "attestation"}}
+
+    monkeypatch.setattr(cli_mod, "_make_client", lambda c, k: FakeClient())
+    out = tmp_path / "does" / "not" / "exist" / "bundle.json"
+    result = CliRunner().invoke(
+        main, ["experiment", "export", "exp-x", "--no-verify", "-o", str(out)]
+    )
+    assert result.exit_code == 0, result.output
+    assert out.exists()
