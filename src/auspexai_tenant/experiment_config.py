@@ -121,6 +121,13 @@ def manifest_dict_from_config(
     }
     if e.get("expected_gguf_sha256"):  # v0_2 / M3 (#13b): pin the served weights
         model["expected_gguf_sha256"] = e["expected_gguf_sha256"]
+    # M3 lazy auto-acquire (#39/#44): where a worker pulls a missing model from.
+    # Without these a `local_weights_required` model only routes to workers that
+    # already hold it; with them an auto_acquire worker fetches it in-line.
+    if e.get("hf_repo"):
+        model["hf_repo"] = e["hf_repo"]
+    if e.get("hf_filename"):
+        model["hf_filename"] = e["hf_filename"]
 
     manifest: dict[str, Any] = {
         "tenant_id": req(e, "tenant_id", "experiment"),
