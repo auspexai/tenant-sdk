@@ -629,21 +629,137 @@ def _load_key(key_path: Path):
         sys.exit(1)
 
 
+@experiment.command("submit")
+@click.argument("pkg_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option(
+    "--manifest",
+    "manifest_name",
+    default="manifest.json",
+    show_default=True,
+    help="Manifest filename within PKG_DIR.",
+)
+@_coord_opt
+@_key_opt
+def experiment_submit(pkg_dir: Path, manifest_name: str, coordinator: str, key_path: Path) -> None:
+    """Submit a BUILT executor package in one step: sign the manifest, upload
+    the package (content-addressed), and create the experiment — collapsing
+    `manifest sign` + `package upload` + `manifest upload`.
+
+    A pure courier: it signs and ships exactly what your build produced. The
+    label is authored upstream (experiment.toml → your build.py, which stamps a
+    unique suffix via `make_unique_label`), so re-running your build then `submit`
+    never collides. Prints the label and the coordinator experiment id."""
+    manifest_path = pkg_dir / manifest_name
+    if not manifest_path.exists():
+        click.echo(f"ERROR: no manifest at {manifest_path}", err=True)
+        sys.exit(1)
+    try:
+        m = Manifest.model_validate(json.loads(manifest_path.read_text()))
+    except json.JSONDecodeError as e:
+        click.echo(f"ERROR: {manifest_path} is not valid JSON: {e}", err=True)
+        sys.exit(2)
+    except ValidationError as e:
+        click.echo(f"ERROR: {manifest_path} failed manifest validation:\n{e}", err=True)
+        sys.exit(1)
+    label = m.experiment_id  # the manifest's experiment_id IS the tenant label
+
+    key = _load_key(key_path)
+    client = _make_client(coordinator, key_path)
+
+    # 1. sign the manifest (next to it, like `manifest sign`)
+    sig = sign_manifest(m, key)
+    sig_path = manifest_path.with_suffix(manifest_path.suffix + ".sig")
+    sig_path.write_text(sig.model_dump_json(indent=2) + "\n")
+    click.echo(f"signed:     {sig_path}")
+
+    # 2. upload the package (idempotent on the content-addressed tree)
+    pkg_out = _run(lambda: client.upload_package(pkg_dir))
+    digest = pkg_out.get("package_digest", "")
+    click.echo(f"package:    {digest[:16]}… ({pkg_out.get('status', 'stored')})")
+
+    # 3. create the experiment
+    result = submit_experiment_from_files(manifest_path, sig_path, coordinator, key)
+    if not result.ok:
+        # A duplicate label is the most likely failure — point at the fix.
+        hint = ""
+        if result.status_code == 409:
+            hint = (
+                "\n  the label is already in use (labels are unique forever). Re-run "
+                "your build so it stamps a fresh make_unique_label suffix, then submit again."
+            )
+        click.echo(f"ERROR: experiment creation failed ({result.status_code}){hint}", err=True)
+        if result.body:
+            click.echo(result.body, err=True)
+        sys.exit(1)
+    exp_id = None
+    try:
+        exp_id = json.loads(result.body).get("experiment_id")
+    except (json.JSONDecodeError, AttributeError):
+        pass
+    click.echo(f"label:      {label}")
+    click.echo(f"experiment: {exp_id or '(see response below)'}")
+    if exp_id is None and result.body:
+        click.echo(result.body)
+    else:
+        click.echo(f"next:       auspexai-tenant experiment run {label}   # or 'latest'")
+
+
+def _resolve_experiment(client, target: str) -> tuple[str, str]:
+    """Resolve a run TARGET — a coordinator experiment id, a tenant label, or
+    the literal 'latest' — to (experiment_id, label). 'latest' = the most
+    recently submitted experiment for this tenant; a label matches
+    tenant_experiment_label (most recent wins if reused)."""
+
+    def _submitted_at(e: dict) -> str:
+        return e.get("submitted_at") or ""
+
+    if target.startswith("exp-"):
+        exp = _run(lambda: client.get_experiment(target))
+        return target, exp.get("tenant_experiment_label", target)
+
+    exps = _run(client.list_experiments)
+    if not exps:
+        click.echo("ERROR: no experiments found for this tenant.", err=True)
+        sys.exit(1)
+    if target == "latest":
+        chosen = max(exps, key=_submitted_at)
+    else:
+        matches = [e for e in exps if e.get("tenant_experiment_label") == target]
+        if not matches:
+            click.echo(
+                f"ERROR: no experiment with label {target!r} (and it isn't an exp- id "
+                "or 'latest').",
+                err=True,
+            )
+            sys.exit(1)
+        chosen = max(matches, key=_submitted_at)
+    return chosen["experiment_id"], chosen.get("tenant_experiment_label", target)
+
+
 @experiment.command("run")
-@click.argument("experiment_id")
+@click.argument("target")
 @click.option(
     "--driver",
     "driver_spec",
-    required=True,
+    default=None,
     help="Tenant driver factory 'module:attr' returning a DriverSpec "
-    "(condition / next_batch / reduce).",
+    "(condition / next_batch / reduce). Defaults to [driver].entrypoint in "
+    "experiment.toml.",
 )
 @click.option(
     "--journal",
     "journal_path",
     type=click.Path(path_type=Path),
-    required=True,
-    help="Run-journal path for durable crash-resume.",
+    default=None,
+    help="Run-journal path for durable crash-resume. Defaults to "
+    "[driver].journal in experiment.toml, else <label>.journal.",
+)
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="experiment.toml path (default: ./experiment.toml if present).",
 )
 @click.option(
     "--doorbell",
@@ -654,22 +770,38 @@ def _load_key(key_path: Path):
 @_coord_opt
 @_key_opt
 def experiment_run(
-    experiment_id: str,
-    driver_spec: str,
-    journal_path: Path,
+    target: str,
+    driver_spec: str | None,
+    journal_path: Path | None,
+    config_path: Path | None,
     doorbell: bool,
     coordinator: str,
     key_path: Path,
 ) -> None:
     """Drive an autonomic (adaptive / run-until-convergence) experiment, headless.
 
+    TARGET is a coordinator experiment id (exp-…), a tenant label, or the literal
+    'latest' (the most recently submitted experiment for this tenant). The driver
+    and journal default from experiment.toml's [driver] table, so a typical run is
+    just `experiment run latest`.
+
     Loads your DriverSpec factory and runs the control loop — submit → poll agreed
     results → fold → test condition → next batch or finalize — until convergence,
     max_rounds, exhaustion, or a stall policy. Resumable via --journal."""
     from auspexai_tenant.driver import DriverSpec, run_until
     from auspexai_tenant.experiment import Experiment
+    from auspexai_tenant.experiment_config import load_experiment_config
     from auspexai_tenant.wake import SseWake, sse_line_source
 
+    cfg = load_experiment_config(config_path)
+    driver_spec = driver_spec or cfg.driver_entrypoint
+    if not driver_spec:
+        click.echo(
+            "ERROR: no driver — pass --driver module:attr or set [driver].entrypoint "
+            "in experiment.toml.",
+            err=True,
+        )
+        sys.exit(1)
     spec = _load_attr(driver_spec)()
     if not isinstance(spec, DriverSpec):
         click.echo(
@@ -677,6 +809,12 @@ def experiment_run(
         )
         sys.exit(1)
     key = _load_key(key_path)
+    client = _make_client(coordinator, key_path)
+    experiment_id, label = _resolve_experiment(client, target)
+    if journal_path is None:
+        journal_path = cfg.journal_path(label)
+    click.echo(f"experiment: {experiment_id}  (label {label})")
+    click.echo(f"journal:    {journal_path}")
     exp = Experiment(coordinator, key, experiment_id)
     wake = spec.wake
     if wake is None and doorbell:
