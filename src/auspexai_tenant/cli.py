@@ -969,8 +969,13 @@ def model_request(
     click.echo(f"request {req['request_id']}: {req['status']}")
     if req["status"] == "available":
         click.echo("  the network already has a worker that can run this model.")
+    elif req["status"] == "acquirable":
+        click.echo(
+            "  no worker holds it yet, but an auto-acquire worker will pull it in-line "
+            "when your experiment runs (declare hf_repo/hf_filename in experiment.toml)."
+        )
     elif req["status"] == "pending":
-        click.echo("  no active worker holds it yet — queued for maintainer review.")
+        click.echo("  no active worker holds or can acquire it — queued for maintainer review.")
 
 
 # ----------------------------------------------------------------------------
