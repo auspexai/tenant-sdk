@@ -112,6 +112,12 @@ class ResultSetAttestation:
     # EB-1: the inclusion proof captured at anchor time (None when anchored
     # pre-EB-1 or not yet anchored) — carried for offline verification.
     rekor_inclusion_proof: dict[str, Any] | None = None
+    # Firewall #2: the coordinator-asserted governance footprint (predicate block);
+    # None on pre-firewall attestations.
+    governance_footprint: dict[str, Any] | None = None
+    # Firewall #1 (G4): units whose replicas diverged — predicate-only signed
+    # observations (not in `units`/the Merkle set). Empty for an all-agreeing run.
+    diverged_units: list[dict[str, Any]] | None = None
 
     @classmethod
     def from_response(cls, body: dict[str, Any]) -> ResultSetAttestation:

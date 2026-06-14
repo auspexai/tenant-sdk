@@ -34,7 +34,13 @@ def _pub_hex(key: Ed25519PrivateKey) -> str:
     return key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex()
 
 
-def _sign_v1_attestation(units: list[dict], key: Ed25519PrivateKey) -> dict:
+def _sign_v1_attestation(
+    units: list[dict],
+    key: Ed25519PrivateKey,
+    *,
+    footprint: dict | None = None,
+    diverged_units: list[dict] | None = None,
+) -> dict:
     """A bundle `attestation` block, COSE-signed as the coordinator's v1 path."""
     root = merkle_root(units, algorithm=RESULT_SET_ALGORITHM_V1)
     predicate = {
@@ -45,6 +51,10 @@ def _sign_v1_attestation(units: list[dict], key: Ed25519PrivateKey) -> dict:
         "unit_count": len(units),
         "units": sorted(units, key=lambda u: u["unit_id"]),
     }
+    if diverged_units:
+        predicate["diverged_units"] = sorted(diverged_units, key=lambda d: d["unit_id"])
+    if footprint is not None:
+        predicate["governance_footprint"] = footprint
     predicate_cbor = cbor2.dumps(predicate, canonical=True)
     statement = {
         "_type": "https://www.in-toto.io/Statement/v1",
@@ -91,6 +101,9 @@ def _make_bundle(
     *,
     n: int = 2,
     with_attestation: bool = True,
+    unit_basis: str | None = None,
+    footprint: dict | None = None,
+    diverged_units: list[dict] | None = None,
 ) -> dict:
     work_units = [{"unit_id": f"u{i}", "payload": {"q": i}} for i in range(n)]
     consensus = []
@@ -110,14 +123,15 @@ def _make_bundle(
         }
         r["worker_signature"] = _sign_worker_result(worker_key, r)
         consensus.append(r)
-        att_units.append(
-            {
-                "unit_id": f"u{i}",
-                "consensus_result_hash": sem,
-                "receipt_id": f"rcpt-u{i}",
-                "unit_payload_sha256": unit_payload_sha256({"q": i}),
-            }
-        )
+        att_unit = {
+            "unit_id": f"u{i}",
+            "consensus_result_hash": sem,
+            "receipt_id": f"rcpt-u{i}",
+            "unit_payload_sha256": unit_payload_sha256({"q": i}),
+        }
+        if unit_basis is not None:
+            att_unit["integrity_basis"] = unit_basis
+        att_units.append(att_unit)
     bundle: dict = {
         "schema": "auspexai-evidence-bundle/v1",
         "experiment_id": "exp-123",
@@ -129,7 +143,9 @@ def _make_bundle(
         "attestation": None,
     }
     if with_attestation:
-        bundle["attestation"] = _sign_v1_attestation(att_units, coordinator_key)
+        bundle["attestation"] = _sign_v1_attestation(
+            att_units, coordinator_key, footprint=footprint, diverged_units=diverged_units
+        )
         root = bundle["attestation"]["merkle_root"]
         root_kind = RESULT_SET_ALGORITHM_V1
     else:
@@ -167,6 +183,74 @@ def test_full_bundle_verifies():
     assert v.completeness_ok is True
     assert v.inputs_bound_ok is True
     assert v.worker_signatures.verified == 2 and not v.worker_signatures.failed
+    assert v.ok
+
+
+def _counts(exact=0, tolerance=0, process=0, diverged=0):
+    return {
+        "within_cell_exact": exact,
+        "within_cell_tolerance": tolerance,
+        "process_only": process,
+        "diverged": diverged,
+    }
+
+
+def test_footprint_recompute_passes_and_surfaces():
+    """Firewall #2 F6 (consumer): a footprint whose integrity_basis counts match a
+    recount of the signed predicate's per-unit basis verifies, and the footprint
+    surfaces for the researcher."""
+    ck, wk = _keys()
+    fp = {
+        "schema_version": 1,
+        "tenant": {"tier": "T2"},
+        "integrity_basis": {"counts": _counts(exact=2)},
+    }
+    v = verify_bundle(_make_bundle(ck, wk, n=2, unit_basis="within_cell_exact", footprint=fp))
+    assert v.footprint_ok is True
+    assert v.governance_footprint["tenant"]["tier"] == "T2"
+    assert v.ok
+
+
+def test_footprint_counts_include_diverged_units():
+    """diverged_units count toward the `diverged` basis — a footprint claiming the
+    divergence recomputes."""
+    ck, wk = _keys()
+    fp = {"integrity_basis": {"counts": _counts(exact=2, diverged=1)}}
+    diverged = [
+        {
+            "unit_id": "u9",
+            "unit_payload_sha256": "",
+            "result_hashes": ["a", "b"],
+            "integrity_basis": "diverged",
+        }
+    ]
+    v = verify_bundle(
+        _make_bundle(
+            ck, wk, n=2, unit_basis="within_cell_exact", footprint=fp, diverged_units=diverged
+        )
+    )
+    assert v.footprint_ok is True
+    assert v.ok
+
+
+def test_footprint_count_tamper_fails():
+    """A signed footprint that overstates its counts (vs the signed unit list)
+    fails — the consumer recount catches a coordinator-side inconsistency even
+    though the COSE signature is valid."""
+    ck, wk = _keys()
+    fp = {"integrity_basis": {"counts": _counts(exact=5)}}  # lies — really 2
+    v = verify_bundle(_make_bundle(ck, wk, n=2, unit_basis="within_cell_exact", footprint=fp))
+    assert v.footprint_ok is False
+    assert not v.ok
+
+
+def test_no_footprint_is_lenient():
+    """A pre-firewall attestation (no governance_footprint) is not failed for it —
+    footprint_ok is None, the bundle still verifies."""
+    ck, wk = _keys()
+    v = verify_bundle(_make_bundle(ck, wk))
+    assert v.footprint_ok is None
+    assert v.governance_footprint is None
     assert v.ok
 
 

@@ -103,6 +103,14 @@ class BundleVerification:
     completeness_ok: bool | None
     inputs_bound_ok: bool | None
     worker_signatures: WorkerSignatureReport
+    # Firewall #2: the footprint's recomputable half (integrity_basis counts) must
+    # match a fresh recount from the signed predicate's per-unit basis. None when
+    # the attestation carries no footprint (pre-firewall); False = the asserted
+    # counts diverge from the signed unit list (tamper or coordinator bug).
+    footprint_ok: bool | None = None
+    # The coordinator-asserted governance footprint, surfaced for the researcher
+    # to correct for apparatus influence (None on pre-firewall attestations).
+    governance_footprint: dict[str, Any] | None = None
     # How the custody signer was grounded. "explicit" = pinned to a caller
     # --signer set; "known" = matched an embedded KNOWN_PUBLIC_SIGNERS key (the
     # default for public-network bundles); "unpinned" = no pin matched (signer
@@ -133,6 +141,7 @@ class BundleVerification:
             and self.root_unified is not False
             and self.completeness_ok is not False
             and self.inputs_bound_ok is not False
+            and self.footprint_ok is not False
             and self.worker_signatures.ok
         )
 
@@ -159,7 +168,28 @@ def _attestation_from_bundle(block: dict[str, Any]) -> ResultSetAttestation:
         rekor_entry_uuid=block.get("rekor_entry_uuid", ""),
         partial=bool(predicate.get("partial", False)),
         rekor_inclusion_proof=block.get("rekor_inclusion_proof"),
+        governance_footprint=predicate.get("governance_footprint"),
+        diverged_units=predicate.get("diverged_units") or [],
     )
+
+
+_INTEGRITY_BASES = ("within_cell_exact", "within_cell_tolerance", "process_only", "diverged")
+
+
+def recompute_integrity_basis_counts(
+    units: list[dict[str, Any]], diverged_units: list[dict[str, Any]] | None
+) -> dict[str, int]:
+    """Firewall #2 recomputable half: re-derive the integrity_basis distribution
+    from the SIGNED predicate's own per-unit basis + diverged_units, independently
+    of the footprint's aggregate claim. The consumer-side twin of the
+    coordinator's `assert_footprint_recomputable` sign-time guard."""
+    counts = {b: 0 for b in _INTEGRITY_BASES}
+    for u in units or []:
+        b = u.get("integrity_basis")
+        if b in counts:
+            counts[b] += 1
+    counts["diverged"] += len(diverged_units or [])
+    return counts
 
 
 def _canonical_result_bytes(r: dict[str, Any]) -> bytes:
@@ -287,9 +317,19 @@ def verify_bundle(
     root_unified: bool | None = None
     completeness: bool | None = None
     inputs_bound: bool | None = None
+    footprint_ok: bool | None = None
+    governance_footprint: dict[str, Any] | None = None
     block = bundle.get("attestation")
     if block:
         att = _attestation_from_bundle(block)
+        governance_footprint = att.governance_footprint
+        if governance_footprint is not None:
+            # Firewall #2 F6 (consumer side): the footprint's asserted
+            # integrity_basis counts must match a fresh recount from the signed
+            # predicate's own per-unit basis + diverged_units.
+            claimed = (governance_footprint.get("integrity_basis") or {}).get("counts") or {}
+            recount = recompute_integrity_basis_counts(att.units, att.diverged_units)
+            footprint_ok = {k: claimed.get(k, 0) for k in recount} == recount
         att_verification = verify_attestation(
             att,
             authorized_signers=att_signers,
@@ -321,6 +361,8 @@ def verify_bundle(
         root_unified=root_unified,
         completeness_ok=completeness,
         inputs_bound_ok=inputs_bound,
+        footprint_ok=footprint_ok,
+        governance_footprint=governance_footprint,
         worker_signatures=ws,
         signer_pin_mode=signer_pin_mode,
     )
@@ -429,6 +471,13 @@ def load_verified(
         raise BundleVerificationError(verification)
 
     inputs = {w["unit_id"]: w.get("payload") or {} for w in data.get("work_units") or []}
+    # Firewall #1: per-unit corroboration basis from the signed attestation, so a
+    # researcher can stratify/filter by corroboration strength (the firewall #2
+    # "correct for apparatus influence" use case).
+    basis_by_unit: dict[str, Any] = {}
+    if data.get("attestation"):
+        att = _attestation_from_bundle(data["attestation"])
+        basis_by_unit = {u["unit_id"]: u.get("integrity_basis") for u in att.units}
     rows = []
     for r in data.get("consensus_results") or []:
         row: dict[str, Any] = {
@@ -438,6 +487,7 @@ def load_verified(
             "completed_at": r.get("completed_at"),
             "semantic_hash": r.get("semantic_hash"),
             "aged_off": bool(r.get("aged_off")),
+            "integrity_basis": basis_by_unit.get(r["unit_id"]),
         }
         _flatten_into(row, "input", inputs.get(r["unit_id"]) or {})
         _flatten_into(row, "output", r.get("payload") or {})
@@ -446,4 +496,7 @@ def load_verified(
     if not df.empty:
         df["completed_at"] = pd.to_datetime(df["completed_at"], format="ISO8601")
         df = df.sort_values("unit_id", kind="stable").reset_index(drop=True)
+    # The apparatus footprint travels with the verified frame (firewall #2,
+    # researcher-facing): df.attrs["governance_footprint"].
+    df.attrs["governance_footprint"] = verification.governance_footprint
     return df

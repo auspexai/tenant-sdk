@@ -32,6 +32,27 @@ def test_load_verified_returns_tidy_frame():
     assert pd.api.types.is_datetime64_any_dtype(df["completed_at"])
 
 
+def test_load_verified_surfaces_integrity_basis_and_footprint():
+    """Firewall #2 researcher surface: a per-row integrity_basis column to stratify
+    by corroboration strength, and the apparatus footprint on df.attrs."""
+    ck, wk = _keys()
+    fp = {
+        "schema_version": 1,
+        "tenant": {"tier": "T2"},
+        "integrity_basis": {
+            "counts": {
+                "within_cell_exact": 2,
+                "within_cell_tolerance": 0,
+                "process_only": 0,
+                "diverged": 0,
+            }
+        },
+    }
+    df = load_verified(_make_bundle(ck, wk, n=2, unit_basis="within_cell_exact", footprint=fp))
+    assert list(df["integrity_basis"]) == ["within_cell_exact", "within_cell_exact"]
+    assert df.attrs["governance_footprint"]["tenant"]["tier"] == "T2"
+
+
 def test_load_verified_accepts_a_saved_bundle_path(tmp_path):
     ck, wk = _keys()
     p = tmp_path / "bundle.json"
