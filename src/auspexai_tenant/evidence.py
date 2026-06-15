@@ -194,7 +194,10 @@ def recompute_integrity_basis_counts(
 
 def _canonical_result_bytes(r: dict[str, Any]) -> bytes:
     """The worker daemon's canonical signing input (signing/result.py) —
-    reproduced byte-for-byte from bundle fields."""
+    reproduced byte-for-byte from bundle fields. A v1 result (§9 #13a)
+    additionally binds `schema_version` + `served_weights`, so verifying the
+    worker signature also verifies the served-weights digest (a tampered digest
+    fails the signature). v0 reconstruction stays byte-identical."""
     body = {
         "unit_id": r["unit_id"],
         "worker_pubkey": r["worker_pubkey_hex"].lower(),
@@ -202,6 +205,12 @@ def _canonical_result_bytes(r: dict[str, Any]) -> bytes:
         "exit_code": int(r["exit_code"]),
         "payload": r["payload"],
     }
+    schema_version = r.get("schema_version")
+    if schema_version and int(schema_version) >= 1:
+        body["schema_version"] = int(schema_version)
+        body["served_weights"] = {
+            str(k): str(v).lower() for k, v in (r.get("served_weights") or {}).items()
+        }
     return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
@@ -441,6 +450,8 @@ def load_verified(
 
     One row per consensus result. Columns: `unit_id`, `result_id`,
     `receipt_id`, `completed_at` (datetime), `semantic_hash`, `aged_off`,
+    `integrity_basis` (firewall #1 corroboration strength), `served_weights`
+    (§9 #13a worker-attested {model_id: gguf_sha256}, signature-covered),
     plus the work-unit INPUT payload flattened under `input.*` and the result
     OUTPUT payload flattened under `output.*` (NaN for aged-off rows — their
     receipt + semantic_hash still verify, but the payload is gone; collection
@@ -488,6 +499,11 @@ def load_verified(
             "semantic_hash": r.get("semantic_hash"),
             "aged_off": bool(r.get("aged_off")),
             "integrity_basis": basis_by_unit.get(r["unit_id"]),
+            # §9 #13a: the worker-ATTESTED served-weights digest {model_id:
+            # gguf_sha256} (covered by the verified worker signature) — so a
+            # researcher can confirm WHICH model produced each row, and
+            # stratify/exclude rows whose served model differs.
+            "served_weights": r.get("served_weights"),
         }
         _flatten_into(row, "input", inputs.get(r["unit_id"]) or {})
         _flatten_into(row, "output", r.get("payload") or {})

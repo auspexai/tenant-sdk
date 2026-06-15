@@ -91,6 +91,12 @@ def _sign_worker_result(worker_key: Ed25519PrivateKey, r: dict) -> str:
         "exit_code": int(r["exit_code"]),
         "payload": r["payload"],
     }
+    sv = r.get("schema_version")
+    if sv and int(sv) >= 1:  # §9 #13a: v1 binds the served-weights digest
+        body["schema_version"] = int(sv)
+        body["served_weights"] = {
+            str(k): str(v).lower() for k, v in (r.get("served_weights") or {}).items()
+        }
     canonical = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
     return b64encode(worker_key.sign(canonical)).decode()
 
@@ -104,6 +110,7 @@ def _make_bundle(
     unit_basis: str | None = None,
     footprint: dict | None = None,
     diverged_units: list[dict] | None = None,
+    served_weights: dict | None = None,
 ) -> dict:
     work_units = [{"unit_id": f"u{i}", "payload": {"q": i}} for i in range(n)]
     consensus = []
@@ -121,6 +128,9 @@ def _make_bundle(
             "receipt_id": f"rcpt-u{i}",
             "completed_at": f"2026-06-11T0{i}:00:00+00:00",
         }
+        if served_weights is not None:  # §9 #13a: v1 worker-attested digest
+            r["schema_version"] = 1
+            r["served_weights"] = served_weights
         r["worker_signature"] = _sign_worker_result(worker_key, r)
         consensus.append(r)
         att_unit = {
@@ -313,6 +323,34 @@ def test_tampered_payload_fails_worker_signature():
     v = verify_bundle(bundle)
     assert v.worker_signatures.failed == ["res-u0"]
     assert not v.ok
+
+
+def test_v1_served_weights_covered_by_worker_signature():
+    """§9 #13a: a v1 result binds its served-weights digest into the signed
+    body, so verifying the worker signature also verifies the digest — and a
+    tampered served_weights surfaces as a signature failure (the coordinator
+    never touches this key, so this is the researcher's independent check that
+    the declared model is the one that ran)."""
+    wk = Ed25519PrivateKey.generate()
+    r = {
+        "result_id": "res-u0",
+        "unit_id": "u0",
+        "payload": {"a": 0},
+        "aged_off": False,
+        "worker_pubkey_hex": _pub_hex(wk),
+        "exit_code": 0,
+        "completed_at": "2026-06-15T00:00:00+00:00",
+        "schema_version": 1,
+        "served_weights": {"gemma": "abc123"},
+    }
+    r["worker_signature"] = _sign_worker_result(wk, r)
+
+    ok = verify_worker_signatures([r])
+    assert ok.verified == 1 and not ok.failed
+
+    tampered = dict(r, served_weights={"gemma": "deadbeef"})
+    bad = verify_worker_signatures([tampered])
+    assert bad.failed == ["res-u0"] and not bad.ok
 
 
 def test_tampered_work_unit_breaks_input_binding():

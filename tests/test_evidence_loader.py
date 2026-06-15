@@ -53,6 +53,15 @@ def test_load_verified_surfaces_integrity_basis_and_footprint():
     assert df.attrs["governance_footprint"]["tenant"]["tier"] == "T2"
 
 
+def test_load_verified_surfaces_served_weights():
+    """§9 #13a researcher surface: a per-row served_weights column (the
+    worker-attested {model_id: gguf_sha256}, signature-covered) so a researcher
+    can confirm which model produced each row."""
+    ck, wk = _keys()
+    df = load_verified(_make_bundle(ck, wk, n=2, served_weights={"gemma": "abc123"}))
+    assert list(df["served_weights"]) == [{"gemma": "abc123"}, {"gemma": "abc123"}]
+
+
 def test_load_verified_accepts_a_saved_bundle_path(tmp_path):
     ck, wk = _keys()
     p = tmp_path / "bundle.json"
