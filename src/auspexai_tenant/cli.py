@@ -18,6 +18,7 @@ import importlib
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import click
@@ -912,6 +913,34 @@ def experiment_run(
         click.echo(f"attestation merkle_root: {result.attestation.merkle_root}")
 
 
+def _wait_for_approval(client, experiment_id: str, poll_interval: float) -> str:
+    """Block until the experiment leaves the pending (`submitted`) state — the
+    driver can only submit work units once it is approved/paused, so `launch`
+    waits here rather than 409-ing the drive into an orphaned experiment. Returns
+    the go-status; exits on a terminal status. Ctrl-C-safe (re-run to resume)."""
+    waiting = {"submitted", "pending", "draft"}
+    terminal = {"completed", "aborted", "failed", "expired", "rejected", "declined"}
+    announced = False
+    while True:
+        try:
+            status = (client.get_experiment(experiment_id) or {}).get("status")
+        except (CoordinatorError, httpx.RequestError) as e:
+            click.echo(f"ERROR: could not poll experiment status: {e}", err=True)
+            sys.exit(1)
+        if status in terminal:
+            click.echo(f"ERROR: experiment is {status} — nothing to drive.", err=True)
+            sys.exit(1)
+        if status not in waiting:
+            return status or "approved"
+        if not announced:
+            click.echo(
+                "Waiting for a maintainer to approve it — approve at "
+                "https://ops.auspexai.network (Ctrl-C is safe; re-run to resume)."
+            )
+            announced = True
+        time.sleep(poll_interval)
+
+
 @experiment.command("launch")
 @click.argument(
     "pkg_dir",
@@ -947,6 +976,13 @@ def experiment_run(
     is_flag=True,
     help="Build + submit only; skip driving (approve, then `experiment run latest`).",
 )
+@click.option(
+    "--poll-interval",
+    type=float,
+    default=5.0,
+    show_default=True,
+    help="Seconds between status polls while waiting for the approval gate.",
+)
 @_coord_opt
 @_key_opt
 @click.pass_context
@@ -958,6 +994,7 @@ def experiment_launch(
     driver_spec: str | None,
     journal_path: Path | None,
     no_drive: bool,
+    poll_interval: float,
     coordinator: str,
     key_path: Path,
 ) -> None:
@@ -1015,10 +1052,10 @@ def experiment_launch(
     experiment_id, label = _resolve_experiment(client, "latest")
     click.echo("")
     click.echo(f"submitted {label}  ({experiment_id})")
-    click.echo("It runs once a maintainer approves it — approve at https://ops.auspexai.network")
-    click.echo(
-        "Driving now; it proceeds automatically on approval (Ctrl-C is safe — re-run to resume)."
-    )
+    # Wait for the maintainer-approval gate before driving: the driver can only
+    # submit work units once the experiment is approved/paused (a 409 otherwise).
+    status = _wait_for_approval(client, experiment_id, poll_interval)
+    click.echo(f"approved ({status}) — driving.")
     ctx.invoke(
         experiment_run,
         target="latest",

@@ -13,7 +13,33 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from auspexai_tenant.cli import main
+from auspexai_tenant.cli import _wait_for_approval, main
+
+
+class _FakeClient:
+    """Returns the next queued status on each get_experiment call."""
+
+    def __init__(self, statuses: list[str]) -> None:
+        self._statuses = list(statuses)
+
+    def get_experiment(self, experiment_id: str) -> dict[str, str]:
+        return {"status": self._statuses.pop(0)}
+
+
+def test_wait_for_approval_returns_immediately_when_approved() -> None:
+    assert _wait_for_approval(_FakeClient(["approved"]), "exp-x", poll_interval=0) == "approved"
+
+
+def test_wait_for_approval_polls_through_submitted() -> None:
+    # submitted twice (the 409 state), then approved → it waits, then proceeds
+    c = _FakeClient(["submitted", "submitted", "approved"])
+    assert _wait_for_approval(c, "exp-x", poll_interval=0) == "approved"
+
+
+def test_wait_for_approval_exits_on_terminal_status() -> None:
+    with pytest.raises(SystemExit) as ei:
+        _wait_for_approval(_FakeClient(["aborted"]), "exp-x", poll_interval=0)
+    assert ei.value.code == 1
 
 
 def test_launch_no_experiment_toml_is_clear_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
