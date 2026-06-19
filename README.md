@@ -114,6 +114,12 @@ verifies all of it independently:
   dataset or it doesn't begin. `bundle table <file> -o results.parquet`
   is the no-Python path to Excel/Tableau/R.
   See [`examples/evidence_loader.ipynb`](examples/evidence_loader.ipynb).
+- **[Reading your evidence](docs/reading_your_evidence.md)** — the analysis
+  guide: each verified row carries `integrity_basis`, `ran_under` (containment),
+  and `served_weights`, and the experiment carries an apparatus footprint.
+  **Stratify, don't pool**; weight by replication + independence; treat divergence
+  as signal, not failure; correct for the footprint. Read this before you
+  aggregate.
 
 ## CLI quick reference
 
