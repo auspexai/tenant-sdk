@@ -65,3 +65,35 @@ def test_explicit_file_path(tmp_path: Path):
     f = tmp_path / "custom.toml"
     f.write_text('[experiment]\nlabel = "x-lab"\n')
     assert load_experiment_config(f).label == "x-lab"
+
+
+def test_walks_up_to_find_config_from_subdir(tmp_path: Path, monkeypatch):
+    """`load_experiment_config(None)` walks up from cwd — so `run`/`launch` work
+    from a subdir (e.g. driver/) with no --config. This is the fix for the
+    'no driver' error when running from driver/."""
+    (tmp_path / "experiment.toml").write_text(
+        "[experiment]\n"
+        'label = "vig"\n'
+        'key_path = "~/.config/auspexai-tenant/vig.key"\n'
+        "[driver]\n"
+        'entrypoint = "drift_driver:build"\n'
+        'path = "driver"\n'
+    )
+    sub = tmp_path / "driver"
+    sub.mkdir()
+    monkeypatch.chdir(sub)
+    cfg = load_experiment_config(None)  # None → walk up from cwd (driver/)
+    assert cfg.source_path is not None
+    assert cfg.label == "vig"
+    assert cfg.driver_entrypoint == "drift_driver:build"
+    assert cfg.driver_path == "driver"
+    assert cfg.key_path == "~/.config/auspexai-tenant/vig.key"
+
+
+def test_no_config_up_the_tree_reads_as_empty(tmp_path: Path, monkeypatch):
+    deep = tmp_path / "a" / "b"
+    deep.mkdir(parents=True)
+    monkeypatch.chdir(deep)
+    cfg = load_experiment_config(None)
+    assert cfg.source_path is None
+    assert cfg.driver_entrypoint is None and cfg.driver_path is None

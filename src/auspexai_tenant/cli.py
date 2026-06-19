@@ -860,6 +860,13 @@ def experiment_run(
     from auspexai_tenant.wake import SseWake, sse_line_source
 
     cfg = load_experiment_config(config_path)
+    # [driver].path → on sys.path so the entrypoint module (e.g. a `driver/` subdir)
+    # imports regardless of cwd; lets `run`/`launch` work from the repo root with no
+    # `cd`. Resolved relative to the experiment.toml the walk-up found.
+    if cfg.driver_path and cfg.source_path is not None:
+        driver_dir = str((cfg.source_path.parent / cfg.driver_path).resolve())
+        if driver_dir not in sys.path:
+            sys.path.insert(0, driver_dir)
     driver_spec = driver_spec or cfg.driver_entrypoint
     if not driver_spec:
         click.echo(
@@ -903,6 +910,110 @@ def experiment_run(
     click.echo(json.dumps(result.aggregate, indent=2, default=str))
     if result.attestation is not None:
         click.echo(f"attestation merkle_root: {result.attestation.merkle_root}")
+
+
+@experiment.command("launch")
+@click.argument(
+    "pkg_dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    required=False,
+    default="pkg",
+)
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="experiment.toml path (default: walk up from cwd).",
+)
+@click.option(
+    "--exact-label", is_flag=True, help="Use [experiment].label verbatim (no timestamp suffix)."
+)
+@click.option(
+    "--driver",
+    "driver_spec",
+    default=None,
+    help="Driver 'module:attr' (default: [driver].entrypoint).",
+)
+@click.option(
+    "--journal",
+    "journal_path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Run-journal path (default: [driver].journal).",
+)
+@click.option(
+    "--no-drive",
+    is_flag=True,
+    help="Build + submit only; skip driving (approve, then `experiment run latest`).",
+)
+@_coord_opt
+@_key_opt
+@click.pass_context
+def experiment_launch(
+    ctx: click.Context,
+    pkg_dir: Path,
+    config_path: Path | None,
+    exact_label: bool,
+    driver_spec: str | None,
+    journal_path: Path | None,
+    no_drive: bool,
+    coordinator: str,
+    key_path: Path,
+) -> None:
+    """Build + submit + drive in ONE command — the whole experiment lifecycle.
+
+    Equivalent to `experiment build PKG_DIR` → `experiment submit PKG_DIR` →
+    `experiment run latest`, but with no ceremony: experiment.toml is found by
+    walking up from the cwd, the driver resolves via [driver].path (no `cd`, no
+    `--config`), and the signing key comes from [experiment].key_path when --key
+    is unset (so no repeated --key). After submit, a maintainer approves the
+    experiment in the operator console; driving begins immediately and proceeds
+    automatically on approval (Ctrl-C is safe — re-run to resume from the journal).
+    PKG_DIR defaults to ./pkg."""
+    from auspexai_tenant.experiment_config import load_experiment_config
+
+    cfg = load_experiment_config(config_path)
+    # Key precedence: explicit --key > [experiment].key_path > the default key path.
+    if key_path == DEFAULT_KEY_PATH and cfg.key_path:
+        key_path = Path(cfg.key_path).expanduser()
+
+    ctx.invoke(
+        experiment_build,
+        pkg_dir=pkg_dir,
+        config_path=config_path,
+        exact_label=exact_label,
+        out_path=None,
+    )
+    ctx.invoke(
+        experiment_submit,
+        pkg_dir=pkg_dir,
+        manifest_name="manifest.json",
+        coordinator=coordinator,
+        key_path=key_path,
+    )
+    if no_drive:
+        click.echo("\nbuilt + submitted. Approve it, then: auspexai-tenant experiment run latest")
+        return
+
+    client = _make_client(coordinator, key_path)
+    experiment_id, label = _resolve_experiment(client, "latest")
+    click.echo("")
+    click.echo(f"submitted {label}  ({experiment_id})")
+    click.echo("It runs once a maintainer approves it — approve at https://ops.auspexai.network")
+    click.echo(
+        "Driving now; it proceeds automatically on approval (Ctrl-C is safe — re-run to resume)."
+    )
+    ctx.invoke(
+        experiment_run,
+        target="latest",
+        driver_spec=driver_spec,
+        journal_path=journal_path,
+        config_path=config_path,
+        doorbell=True,
+        coordinator=coordinator,
+        key_path=key_path,
+    )
 
 
 @experiment.command("reduce")

@@ -54,6 +54,20 @@ class ExperimentConfig:
     def driver_entrypoint(self) -> str | None:
         return self.driver.get("entrypoint")
 
+    @property
+    def driver_path(self) -> str | None:
+        """`[driver].path` — a directory (relative to `experiment.toml`) prepended
+        to `sys.path` before importing the entrypoint, so a driver module that
+        lives in a subdir (e.g. `driver/`) resolves regardless of the invocation
+        cwd. Lets `run`/`launch` work from the repo root with no `cd`."""
+        return self.driver.get("path")
+
+    @property
+    def key_path(self) -> str | None:
+        """`[experiment].key_path` — the tenant signing key. Set once here and
+        the SDK signs with it, so `--key` need not be passed on every command."""
+        return self.experiment.get("key_path")
+
     def journal_path(self, label: str) -> Path:
         """The run-journal path: an explicit `[driver].journal`, or
         `<label>.journal` when it is unset / "auto"."""
@@ -63,14 +77,32 @@ class ExperimentConfig:
         return Path(j)
 
 
+def _find_config_upward(start: Path) -> Path | None:
+    """Walk up from `start` to the filesystem root, returning the first
+    `experiment.toml`. Lets `run`/`launch` work from a subdir (e.g. `driver/`)
+    with no `--config` — the config is found at the repo root just like git
+    finds `.git`."""
+    for d in (start, *start.parents):
+        candidate = d / DEFAULT_CONFIG_NAME
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def load_experiment_config(path: str | Path | None = None) -> ExperimentConfig:
     """Load `experiment.toml`. `path` may be the file, a directory containing
-    it, or None (→ cwd). A missing file yields an empty config (every knob then
-    has to be supplied by flag), never an error — the file is a convenience, not
-    a requirement."""
-    p = Path(path) if path is not None else Path.cwd()
-    if p.is_dir():
-        p = p / DEFAULT_CONFIG_NAME
+    it, or None (→ walk up from cwd to find it). A missing file yields an empty
+    config (every knob then has to be supplied by flag), never an error — the
+    file is a convenience, not a requirement."""
+    if path is not None:
+        p = Path(path)
+        if p.is_dir():
+            p = p / DEFAULT_CONFIG_NAME
+    else:
+        found = _find_config_upward(Path.cwd())
+        if found is None:
+            return ExperimentConfig(source_path=None)
+        p = found
     if not p.exists():
         return ExperimentConfig(source_path=None)
     data = tomllib.loads(p.read_text(encoding="utf-8"))
