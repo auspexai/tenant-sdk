@@ -915,9 +915,9 @@ def experiment_run(
 @experiment.command("launch")
 @click.argument(
     "pkg_dir",
-    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    type=click.Path(file_okay=False, path_type=Path),
     required=False,
-    default="pkg",
+    default=None,
 )
 @click.option(
     "--config",
@@ -952,7 +952,7 @@ def experiment_run(
 @click.pass_context
 def experiment_launch(
     ctx: click.Context,
-    pkg_dir: Path,
+    pkg_dir: Path | None,
     config_path: Path | None,
     exact_label: bool,
     driver_spec: str | None,
@@ -970,10 +970,25 @@ def experiment_launch(
     is unset (so no repeated --key). After submit, a maintainer approves the
     experiment in the operator console; driving begins immediately and proceeds
     automatically on approval (Ctrl-C is safe — re-run to resume from the journal).
-    PKG_DIR defaults to ./pkg."""
+    PKG_DIR defaults to the `pkg/` next to experiment.toml — so plain `launch`
+    works from anywhere in the repo."""
     from auspexai_tenant.experiment_config import load_experiment_config
 
     cfg = load_experiment_config(config_path)
+    # Resolve the package dir from the experiment.toml the walk-up found, so plain
+    # `launch` works from anywhere in the repo — not only the dir that holds pkg/.
+    if pkg_dir is None:
+        if cfg.source_path is None:
+            click.echo(
+                "ERROR: no experiment.toml found (walked up from the current dir). "
+                "cd into your tenant repo, or pass PKG_DIR.",
+                err=True,
+            )
+            sys.exit(1)
+        pkg_dir = cfg.source_path.parent / "pkg"
+    if not pkg_dir.is_dir():
+        click.echo(f"ERROR: package dir not found: {pkg_dir} — pass PKG_DIR explicitly.", err=True)
+        sys.exit(1)
     # Key precedence: explicit --key > [experiment].key_path > the default key path.
     if key_path == DEFAULT_KEY_PATH and cfg.key_path:
         key_path = Path(cfg.key_path).expanduser()
