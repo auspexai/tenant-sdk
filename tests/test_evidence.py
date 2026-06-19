@@ -97,6 +97,8 @@ def _sign_worker_result(worker_key: Ed25519PrivateKey, r: dict) -> str:
         body["served_weights"] = {
             str(k): str(v).lower() for k, v in (r.get("served_weights") or {}).items()
         }
+    if sv and int(sv) >= 2:  # A2 #32: v2 binds the sandbox policy
+        body["ran_under"] = str(r.get("ran_under") or "").lower()
     canonical = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
     return b64encode(worker_key.sign(canonical)).decode()
 
@@ -478,3 +480,29 @@ def test_tampered_attestation_cose_fails():
     v = verify_bundle(bundle)
     assert v.attestation is not None and not v.attestation.ok
     assert not v.ok
+
+
+def test_v2_ran_under_is_signature_bound():
+    """A2 #32: the worker signature binds `ran_under`, so a researcher re-verifying
+    the bundle catches a tampered containment claim — and a faithful one passes."""
+    _, worker_key = _keys()
+    r = {
+        "result_id": "res-u0",
+        "unit_id": "u0",
+        "worker_pubkey_hex": _pub_hex(worker_key),
+        "completed_at": "2026-06-11T00:00:00+00:00",
+        "exit_code": 0,
+        "payload": {"a": 0},
+        "schema_version": 2,
+        "served_weights": {},
+        "ran_under": "strict",
+    }
+    r["worker_signature"] = _sign_worker_result(worker_key, r)
+
+    ok = verify_worker_signatures([r], strict=True)
+    assert ok.verified == 1 and not ok.failed
+
+    # Flip the containment claim in the bundle — the bound signature no longer verifies.
+    tampered = {**r, "ran_under": "permissive"}
+    bad = verify_worker_signatures([tampered], strict=True)
+    assert bad.failed == ["res-u0"]

@@ -195,9 +195,10 @@ def recompute_integrity_basis_counts(
 def _canonical_result_bytes(r: dict[str, Any]) -> bytes:
     """The worker daemon's canonical signing input (signing/result.py) —
     reproduced byte-for-byte from bundle fields. A v1 result (§9 #13a)
-    additionally binds `schema_version` + `served_weights`, so verifying the
-    worker signature also verifies the served-weights digest (a tampered digest
-    fails the signature). v0 reconstruction stays byte-identical."""
+    additionally binds `schema_version` + `served_weights`, and a v2 result
+    (A2 #32) additionally binds `ran_under` (the sandbox policy), so verifying the
+    worker signature also verifies those (a tampered digest or containment claim
+    fails the signature). v0/v1 reconstruction stays byte-identical."""
     body = {
         "unit_id": r["unit_id"],
         "worker_pubkey": r["worker_pubkey_hex"].lower(),
@@ -211,6 +212,8 @@ def _canonical_result_bytes(r: dict[str, Any]) -> bytes:
         body["served_weights"] = {
             str(k): str(v).lower() for k, v in (r.get("served_weights") or {}).items()
         }
+    if schema_version and int(schema_version) >= 2:
+        body["ran_under"] = str(r.get("ran_under") or "").lower()
     return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
@@ -504,6 +507,10 @@ def load_verified(
             # researcher can confirm WHICH model produced each row, and
             # stratify/exclude rows whose served model differs.
             "served_weights": r.get("served_weights"),
+            # A2 #32: the worker-SIGNED sandbox policy each row ran under
+            # (covered by the verified signature) — so a researcher can stratify
+            # by containment, not just trust the apparatus's aggregate.
+            "ran_under": r.get("ran_under"),
         }
         _flatten_into(row, "input", inputs.get(r["unit_id"]) or {})
         _flatten_into(row, "output", r.get("payload") or {})
