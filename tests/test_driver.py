@@ -177,6 +177,50 @@ def test_max_rounds(tmp_path) -> None:
     assert result.aggregate["total"] == 3
 
 
+def test_duration_cap_finalizes_like_max_rounds(tmp_path) -> None:
+    # A run that never converges, with an injected clock that jumps past the
+    # deadline after the first round → outcome "time_capped" AND the experiment
+    # finalizes (same side-effect the max_rounds path asserts), not an abort.
+    fake = FakeExperiment()
+    # First reads (deadline compute + round-0 gate) are before the cap; the next
+    # gate check (round-1 boundary) is past it. monotonic() is read a few times
+    # per round (deadline calc, gate, stall bookkeeping), so feed a long ramp.
+    ticks = iter([0.0, 0.0, 0.0, 0.0] + [100.0] * 50)
+
+    result = run_until(
+        fake,
+        condition=lambda a: False,  # never converges
+        next_batch=_batch_of(1),
+        reduce=Counter(),
+        journal=tmp_path / "j",
+        wake=_wake(),
+        max_rounds=999,  # would otherwise run far past the cap
+        duration_cap_seconds=10.0,
+        monotonic=lambda: next(ticks),
+    )
+    assert result.outcome == "time_capped"
+    assert fake.finalized is True  # FINALIZED, like max_rounds
+    assert fake.aborted is False  # NOT aborted
+    assert result.rounds >= 1  # at least one round completed before the cap
+    assert result.aggregate["total"] == result.rounds  # 1 unit/round folded
+
+
+def test_duration_cap_none_runs_to_max_rounds(tmp_path) -> None:
+    # With no cap the loop is unchanged: it runs to max_rounds.
+    result = run_until(
+        FakeExperiment(),
+        condition=lambda a: False,
+        next_batch=_batch_of(1),
+        reduce=Counter(),
+        journal=tmp_path / "j",
+        wake=_wake(),
+        max_rounds=3,
+        duration_cap_seconds=None,
+    )
+    assert result.outcome == "max_rounds"
+    assert result.rounds == 3
+
+
 def test_exhausted_when_next_batch_returns_none(tmp_path) -> None:
     def next_batch(_agg, rnd):
         return [Unit(f"r{rnd}", {})] if rnd < 2 else None

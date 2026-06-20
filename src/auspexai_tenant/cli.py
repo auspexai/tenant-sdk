@@ -17,6 +17,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -803,6 +804,74 @@ def _resolve_experiment(client, target: str) -> tuple[str, str]:
     return chosen["experiment_id"], chosen.get("tenant_experiment_label", target)
 
 
+_DURATION_UNITS = {"h": 3600.0, "m": 60.0, "s": 1.0}
+_DURATION_TOKEN = re.compile(r"(\d+(?:\.\d+)?)([hms])", re.IGNORECASE)
+
+
+def parse_duration(s: str) -> float:
+    """Parse a wall-clock duration into seconds.
+
+    Accepts:
+      * unit strings — "4h", "90m", "30s", or compound "1h30m" / "2h15m30s"
+        (each unit at most once, descending h > m > s);
+      * a clock string "HH:MM:SS" (or "MM:SS");
+      * a bare number ("3600", "1.5") = seconds.
+
+    Raises `click.BadParameter` on anything malformed (units out of order, an
+    unknown suffix, a negative value, trailing junk, etc.)."""
+    raw = s.strip()
+    if not raw:
+        raise click.BadParameter("empty duration")
+    lowered = raw.lower()
+
+    # bare number = seconds
+    try:
+        seconds = float(lowered)
+    except ValueError:
+        pass
+    else:
+        if seconds < 0:
+            raise click.BadParameter(f"duration cannot be negative: {s!r}")
+        return seconds
+
+    # HH:MM:SS / MM:SS clock form
+    if ":" in lowered:
+        parts = lowered.split(":")
+        if len(parts) not in (2, 3) or any(p == "" for p in parts):
+            raise click.BadParameter(f"invalid clock duration: {s!r} (use HH:MM:SS or MM:SS)")
+        try:
+            nums = [float(p) for p in parts]
+        except ValueError as e:
+            raise click.BadParameter(f"invalid clock duration: {s!r}") from e
+        if any(n < 0 for n in nums):
+            raise click.BadParameter(f"duration cannot be negative: {s!r}")
+        total = 0.0
+        for n in nums:
+            total = total * 60 + n
+        return total
+
+    # unit form: 4h / 90m / 30s / 1h30m — each unit once, descending order
+    matches = list(_DURATION_TOKEN.finditer(lowered))
+    consumed = "".join(m.group(0) for m in matches)
+    if not matches or consumed != lowered:
+        raise click.BadParameter(
+            f"invalid duration: {s!r} (use e.g. 4h, 90m, 1h30m, HH:MM:SS, or a number of seconds)"
+        )
+    order = "hms"
+    last_idx = -1
+    total = 0.0
+    for m in matches:
+        unit = m.group(2).lower()
+        idx = order.index(unit)
+        if idx <= last_idx:
+            raise click.BadParameter(
+                f"invalid duration: {s!r} (units must be h>m>s, each at most once)"
+            )
+        last_idx = idx
+        total += float(m.group(1)) * _DURATION_UNITS[unit]
+    return total
+
+
 @experiment.command("run")
 @click.argument("target")
 @click.option(
@@ -834,6 +903,13 @@ def _resolve_experiment(client, target: str) -> tuple[str, str]:
     help="Also subscribe to the SSE event stream and poll immediately on a relevant "
     "event (the timer floor still guarantees liveness).",
 )
+@click.option(
+    "--duration-cap",
+    "duration_cap",
+    default=None,
+    help="Wall-clock cap (e.g. 4h, 90m, 1h30m, HH:MM:SS); the run stops + finalizes "
+    "at the cap, like max_rounds.",
+)
 @_coord_opt
 @_key_opt
 def experiment_run(
@@ -842,6 +918,7 @@ def experiment_run(
     journal_path: Path | None,
     config_path: Path | None,
     doorbell: bool,
+    duration_cap: str | None,
     coordinator: str,
     key_path: Path,
 ) -> None:
@@ -893,6 +970,11 @@ def experiment_run(
     wake = spec.wake
     if wake is None and doorbell:
         wake = SseWake(sse_line_source(coordinator, key, experiment_id))
+    # CLI flag wins over a spec-level cap; either may be unset.
+    parsed_cap = parse_duration(duration_cap) if duration_cap is not None else None
+    duration_cap_seconds = (
+        parsed_cap if parsed_cap is not None else getattr(spec, "duration_cap_seconds", None)
+    )
     result = _run(
         lambda: run_until(
             exp,
@@ -903,10 +985,15 @@ def experiment_run(
             wake=wake,
             stall=spec.stall,
             max_rounds=spec.max_rounds,
+            duration_cap_seconds=duration_cap_seconds,
         )
     )
     click.echo(f"outcome:  {result.outcome}")
     click.echo(f"rounds:   {result.rounds}")
+    if result.outcome == "time_capped":
+        click.echo(
+            f"stopped: duration cap reached after {result.rounds} rounds; experiment finalized."
+        )
     click.echo("aggregate:")
     click.echo(json.dumps(result.aggregate, indent=2, default=str))
     if result.attestation is not None:
@@ -983,6 +1070,13 @@ def _wait_for_approval(client, experiment_id: str, poll_interval: float) -> str:
     show_default=True,
     help="Seconds between status polls while waiting for the approval gate.",
 )
+@click.option(
+    "--duration-cap",
+    "duration_cap",
+    default=None,
+    help="Wall-clock cap (e.g. 4h, 90m, 1h30m, HH:MM:SS); the run stops + finalizes "
+    "at the cap, like max_rounds.",
+)
 @_coord_opt
 @_key_opt
 @click.pass_context
@@ -995,6 +1089,7 @@ def experiment_launch(
     journal_path: Path | None,
     no_drive: bool,
     poll_interval: float,
+    duration_cap: str | None,
     coordinator: str,
     key_path: Path,
 ) -> None:
@@ -1011,6 +1106,9 @@ def experiment_launch(
     works from anywhere in the repo."""
     from auspexai_tenant.experiment_config import load_experiment_config
 
+    # Validate the cap up front so a typo fails before the build/submit work.
+    if duration_cap is not None:
+        parse_duration(duration_cap)
     cfg = load_experiment_config(config_path)
     # Resolve the package dir from the experiment.toml the walk-up found, so plain
     # `launch` works from anywhere in the repo — not only the dir that holds pkg/.
@@ -1063,6 +1161,7 @@ def experiment_launch(
         journal_path=journal_path,
         config_path=config_path,
         doorbell=True,
+        duration_cap=duration_cap,
         coordinator=coordinator,
         key_path=key_path,
     )

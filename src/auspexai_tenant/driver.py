@@ -115,8 +115,8 @@ class AbortAfter:
 class RunResult:
     """Outcome of a `run_until` call.
 
-    `outcome` ∈ converged | max_rounds | exhausted | finalized_partial | aborted |
-    already_finalized | already_aborted. `aggregate` is `reduce.finalize()`;
+    `outcome` ∈ converged | max_rounds | time_capped | exhausted | finalized_partial |
+    aborted | already_finalized | already_aborted. `aggregate` is `reduce.finalize()`;
     `attestation` is the result-set attestation when it was retrievable (None if
     the experiment hadn't finished auto-completing — fetch later via
     `Experiment.attestation()`)."""
@@ -140,6 +140,11 @@ class DriverSpec:
     wake: WakeSource | None = None
     stall: StallPolicy | None = None
     max_rounds: int = 50
+    # Wall-clock budget (seconds). When the loop next checks (after the condition
+    # and max_rounds gates) the cap is reached, the run finalizes at its current
+    # state — exactly like max_rounds, not an abort. The CLI `--duration-cap`
+    # flag overrides this when set.
+    duration_cap_seconds: float | None = None
 
 
 def run_until(
@@ -154,17 +159,28 @@ def run_until(
     stall: StallPolicy | None = None,
     include: str = "consensus",
     fetch_attestation: bool = True,
+    duration_cap_seconds: float | None = None,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> RunResult:
     """Drive `experiment` until `condition(reduce)` holds, `next_batch` is
-    exhausted, `max_rounds` is hit, or a `StallPolicy` ends it. See the module
-    docstring for the loop shape and correctness model.
+    exhausted, `max_rounds` is hit, the `duration_cap_seconds` wall-clock budget
+    is reached, or a `StallPolicy` ends it. See the module docstring for the loop
+    shape and correctness model.
 
     `next_batch(reduce, round)` returns the round's units (or None/empty to stop);
     `condition(reduce)` is the convergence predicate over the running aggregate;
     `reduce` is a `RunningAggregate` (incremental + checkpointable); `journal` is a
     path or `RunJournal` for crash-resume; `wake` defaults to `TimerWake`; `stall`
-    defaults to `WaitForever`."""
+    defaults to `WaitForever`.
+
+    `duration_cap_seconds` is an optional wall-clock budget for the whole run: a
+    `deadline` is fixed at `monotonic() + duration_cap_seconds` on entry, and the
+    loop checks it at each round boundary (after the condition and max_rounds
+    gates). When the cap is reached the run FINALIZES at its current state with
+    outcome `"time_capped"` — exactly like `max_rounds`, never an abort — so an
+    adaptive / overnight run stops cleanly within a time budget instead of running
+    to `max_rounds` or forever. The cap is checked between rounds, so an
+    in-flight round always completes (or stalls per `stall`) before the cap fires."""
     jrnl = journal if isinstance(journal, RunJournal) else RunJournal(journal)
     wake = wake or TimerWake()
     stall = stall or WaitForever()
@@ -184,6 +200,7 @@ def run_until(
     round_ = state.current_round
     completed_rounds = round_
     outcome = ""
+    deadline = monotonic() + duration_cap_seconds if duration_cap_seconds is not None else None
 
     while True:
         if condition(reduce):
@@ -191,6 +208,9 @@ def run_until(
             break
         if round_ >= max_rounds:
             outcome = "max_rounds"
+            break
+        if deadline is not None and monotonic() >= deadline:
+            outcome = "time_capped"
             break
 
         # --- ensure the current round's batch is on the coordinator ---
