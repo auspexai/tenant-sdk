@@ -29,6 +29,14 @@ DEFAULT_CONFIG_NAME = "experiment.toml"
 # A `run`/`launch` that selected a [profiles.<name>] override-set exports it here
 # so a driver factory that re-loads the config itself (e.g. Vigiles'
 # drift_driver.build) picks up the SAME active profile with no extra wiring.
+#
+# INTERIM BRIDGE — not the end-state. The active profile is currently re-resolved
+# independently at each consumer (CLI→manifest, driver→toml re-load), kept coherent
+# by this env var. Future consumers (the coordinator's tier-gating, the sandboxed
+# executor) can't read a client-side env var. The robust end-state is to resolve
+# ONCE and bake the resolved profile into the submitted manifest, so every consumer
+# reads that single artifact and this bridge is retired. Decision tracked in
+# vigiles_onramp_phase3_design.md §6 item 6 (folded into Phase-3 increment 3).
 PROFILE_ENV_VAR = "AUSPEXAI_PROFILE"
 
 
