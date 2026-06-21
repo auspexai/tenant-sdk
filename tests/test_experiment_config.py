@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 
 from auspexai_tenant.experiment_config import (
-    PROFILE_ENV_VAR,
     load_experiment_config,
     make_unique_label,
     manifest_dict_from_config,
@@ -197,33 +196,9 @@ def test_default_profile_applies_when_unset(tmp_path: Path):
     assert cfg.experiment["replication"] == 2
 
 
-def test_env_var_profile_fallback(tmp_path: Path, monkeypatch):
-    """The driver factory re-loads the config with no explicit profile — it must
-    pick up the active profile from AUSPEXAI_PROFILE (the run/launch export)."""
-    monkeypatch.setenv(PROFILE_ENV_VAR, "research")
-    cfg = load_experiment_config(_write_profile_toml(tmp_path))  # no profile= arg
-    assert cfg.active_profile == "research"
-    assert cfg.driver["run_seconds"] == 28800
-
-
-def test_explicit_profile_beats_env_var(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv(PROFILE_ENV_VAR, "research")
-    cfg = load_experiment_config(_write_profile_toml(tmp_path), profile="starter")
-    assert cfg.active_profile == "starter"
-    assert cfg.experiment["replication"] == 2
-
-
 def test_explicit_profile_missing_file_raises(tmp_path: Path):
     with pytest.raises(ValueError, match=r"no experiment\.toml"):
         load_experiment_config(tmp_path, profile="starter")  # dir has no toml
-
-
-def test_env_profile_missing_file_degrades_to_empty(tmp_path: Path, monkeypatch):
-    """A stale env var must NOT break an unrelated empty-config load (only an
-    EXPLICIT profile= against a missing file is a hard error)."""
-    monkeypatch.setenv(PROFILE_ENV_VAR, "starter")
-    cfg = load_experiment_config(tmp_path)  # dir has no toml, no explicit arg
-    assert cfg.source_path is None and cfg.active_profile is None
 
 
 def test_available_profiles(tmp_path: Path):

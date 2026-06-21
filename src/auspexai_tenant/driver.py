@@ -132,7 +132,12 @@ class DriverSpec:
     """A tenant's loop configuration for `auspexai-tenant experiment run` — the
     factory named on the CLI (`module:attr`) returns one of these. Keeps the
     science (condition / adaptive generator / aggregator) in tenant code while the
-    CLI wires the signed `Experiment`, journal, and wake source."""
+    CLI wires the signed `Experiment`, journal, and wake source.
+
+    The factory is called with the **resolved `ExperimentConfig`** —
+    `def build(cfg): ...` — so the `[driver]` knobs and the active `--profile`
+    arrive as an argument, resolved once by the CLI. A factory reads what it needs
+    from `cfg.driver`; it must NOT re-load the config from disk."""
 
     condition: Condition
     next_batch: NextBatch

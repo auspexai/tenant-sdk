@@ -17,7 +17,6 @@ env-var one-liners for a terminal/clipboard to mangle
 
 from __future__ import annotations
 
-import os
 import tomllib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -25,19 +24,6 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_CONFIG_NAME = "experiment.toml"
-
-# A `run`/`launch` that selected a [profiles.<name>] override-set exports it here
-# so a driver factory that re-loads the config itself (e.g. Vigiles'
-# drift_driver.build) picks up the SAME active profile with no extra wiring.
-#
-# INTERIM BRIDGE — not the end-state. The active profile is currently re-resolved
-# independently at each consumer (CLI→manifest, driver→toml re-load), kept coherent
-# by this env var. Future consumers (the coordinator's tier-gating, the sandboxed
-# executor) can't read a client-side env var. The robust end-state is to resolve
-# ONCE and bake the resolved profile into the submitted manifest, so every consumer
-# reads that single artifact and this bridge is retired. Decision tracked in
-# vigiles_onramp_phase3_design.md §6 item 6 (folded into Phase-3 increment 3).
-PROFILE_ENV_VAR = "AUSPEXAI_PROFILE"
 
 
 @dataclass(frozen=True)
@@ -172,14 +158,12 @@ def load_experiment_config(
     config (every knob then has to be supplied by flag), never an error — the
     file is a convenience, not a requirement.
 
-    `profile` selects a `[profiles.<name>]` override-set (see `_resolve_profile`);
-    when None it falls back to the `AUSPEXAI_PROFILE` env var, so the active
-    profile a `run`/`launch` selected propagates to a driver factory that re-loads
-    the config itself (e.g. Vigiles' `drift_driver.build`) with no extra wiring.
-    An EXPLICIT `profile=` against a missing file is a hard error (the caller asked
-    for a profile that can't be honored); the env-var fallback degrades to empty."""
-    explicit = profile is not None
-    effective_profile = profile if explicit else (os.environ.get(PROFILE_ENV_VAR) or None)
+    `profile` selects a `[profiles.<name>]` override-set (see `_resolve_profile`).
+    The resolved config is passed to the driver factory by the caller (`run`/
+    `launch` → `factory(cfg)`), so the active profile reaches the driver as an
+    argument — never re-loaded from disk or carried by a side-channel. An EXPLICIT
+    `profile=` against a missing file is a hard error (the caller asked for a
+    profile that can't be honored)."""
     if path is not None:
         p = Path(path)
         if p.is_dir():
@@ -187,20 +171,16 @@ def load_experiment_config(
     else:
         found = _find_config_upward(Path.cwd())
         if found is None:
-            if explicit and effective_profile:
-                raise ValueError(
-                    f"profile '{effective_profile}' requested but no experiment.toml was found"
-                )
+            if profile:
+                raise ValueError(f"profile '{profile}' requested but no experiment.toml was found")
             return ExperimentConfig(source_path=None)
         p = found
     if not p.exists():
-        if explicit and effective_profile:
-            raise ValueError(
-                f"profile '{effective_profile}' requested but no experiment.toml at {p}"
-            )
+        if profile:
+            raise ValueError(f"profile '{profile}' requested but no experiment.toml at {p}")
         return ExperimentConfig(source_path=None)
     data = tomllib.loads(p.read_text(encoding="utf-8"))
-    data, active_profile = _resolve_profile(data, effective_profile)
+    data, active_profile = _resolve_profile(data, profile)
     return ExperimentConfig(
         experiment=dict(data.get("experiment") or {}),
         driver=dict(data.get("driver") or {}),

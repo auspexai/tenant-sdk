@@ -951,13 +951,9 @@ def experiment_run(
     max_rounds, exhaustion, or a stall policy. Resumable via --journal."""
     from auspexai_tenant.driver import DriverSpec, run_until
     from auspexai_tenant.experiment import Experiment
-    from auspexai_tenant.experiment_config import PROFILE_ENV_VAR, load_experiment_config
+    from auspexai_tenant.experiment_config import load_experiment_config
     from auspexai_tenant.wake import SseWake, sse_line_source
 
-    # Export the selected profile so the driver factory (which re-loads the config
-    # itself, e.g. drift_driver.build) resolves the SAME profile's [driver] knobs.
-    if profile:
-        os.environ[PROFILE_ENV_VAR] = profile
     cfg = load_experiment_config(config_path, profile=profile)
     # [driver].path → on sys.path so the entrypoint module (e.g. a `driver/` subdir)
     # imports regardless of cwd; lets `run`/`launch` work from the repo root with no
@@ -974,7 +970,7 @@ def experiment_run(
             err=True,
         )
         sys.exit(1)
-    spec = _load_attr(driver_spec)()
+    spec = _load_attr(driver_spec)(cfg)
     if not isinstance(spec, DriverSpec):
         click.echo(
             f"ERROR: {driver_spec} must return a DriverSpec, got {type(spec).__name__}", err=True
@@ -1129,15 +1125,11 @@ def experiment_launch(
     automatically on approval (Ctrl-C is safe — re-run to resume from the journal).
     PKG_DIR defaults to the `pkg/` next to experiment.toml — so plain `launch`
     works from anywhere in the repo."""
-    from auspexai_tenant.experiment_config import PROFILE_ENV_VAR, load_experiment_config
+    from auspexai_tenant.experiment_config import load_experiment_config
 
     # Validate the cap up front so a typo fails before the build/submit work.
     if duration_cap is not None:
         parse_duration(duration_cap)
-    # Export the selected profile so the driver's own config re-load resolves it
-    # (build/run also receive it explicitly via the invokes below).
-    if profile:
-        os.environ[PROFILE_ENV_VAR] = profile
     cfg = load_experiment_config(config_path, profile=profile)
     # Resolve the package dir from the experiment.toml the walk-up found, so plain
     # `launch` works from anywhere in the repo — not only the dir that holds pkg/.
