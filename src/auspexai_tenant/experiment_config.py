@@ -17,6 +17,7 @@ env-var one-liners for a terminal/clipboard to mangle
 
 from __future__ import annotations
 
+import os
 import tomllib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -24,6 +25,11 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_CONFIG_NAME = "experiment.toml"
+
+# A `run`/`launch` that selected a [profiles.<name>] override-set exports it here
+# so a driver factory that re-loads the config itself (e.g. Vigiles'
+# drift_driver.build) picks up the SAME active profile with no extra wiring.
+PROFILE_ENV_VAR = "AUSPEXAI_PROFILE"
 
 
 @dataclass(frozen=True)
@@ -35,12 +41,19 @@ class ExperimentConfig:
     driver: dict[str, Any] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)  # the whole parsed file
     source_path: Path | None = None
+    active_profile: str | None = None  # the [profiles.<name>] applied, if any
 
     def section(self, name: str) -> dict[str, Any]:
         """An arbitrary top-level table (executor / reducer / work_unit_source /
         …), or {} when absent. Used by the generic `experiment build`."""
         v = self.raw.get(name)
         return dict(v) if isinstance(v, dict) else {}
+
+    @property
+    def available_profiles(self) -> list[str]:
+        """Names of the [profiles.<name>] override-sets declared in the file."""
+        p = self.raw.get("profiles")
+        return sorted(p) if isinstance(p, dict) else []
 
     @property
     def label(self) -> str | None:
@@ -89,11 +102,76 @@ def _find_config_upward(start: Path) -> Path | None:
     return None
 
 
-def load_experiment_config(path: str | Path | None = None) -> ExperimentConfig:
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Recursively merge `override` onto a copy of `base`: dict values merge
+    key-by-key; every other value (scalars, lists) replaces wholesale — so a
+    profile's `sensitive_content_flags = []` CLEARS the list rather than
+    appending, and a scalar override wins outright."""
+    out = dict(base)
+    for k, v in override.items():
+        cur = out.get(k)
+        if isinstance(v, dict) and isinstance(cur, dict):
+            out[k] = _deep_merge(cur, v)
+        else:
+            out[k] = v
+    return out
+
+
+def _resolve_profile(
+    data: dict[str, Any], profile: str | None
+) -> tuple[dict[str, Any], str | None]:
+    """Apply a `[profiles.<name>]` override-set to the parsed toml `data`.
+
+    The active profile is `profile`, else `[default_profile]`, else none (the base
+    config is returned unchanged — fully backward-compatible). A profile's
+    TABLE-valued keys are section overrides, deep-merged onto the matching
+    top-level table (`[profiles.starter.driver]` → `[driver]`); its scalar-valued
+    keys (`description`, and forward-compat markers) are profile metadata, ignored
+    by the merge.
+
+    Phase-3 note: this is the override MECHANISM only. Which sections a *certified*
+    starter profile may touch (the locked executor / reducer / probe-panel) and
+    the tier-gated selection are enforced later (`vigiles_onramp_phase3_design.md`,
+    Phase-3 increments 3+) — not here.
+    """
+    selected = profile if profile is not None else data.get("default_profile")
+    if not selected:
+        return data, None
+    profiles = data.get("profiles")
+    if not isinstance(profiles, dict) or selected not in profiles:
+        available = sorted(profiles) if isinstance(profiles, dict) else []
+        hint = (
+            f" (available: {', '.join(available)})" if available else " (no [profiles.*] defined)"
+        )
+        raise ValueError(f"experiment.toml has no profile '{selected}'{hint}")
+    block = profiles[selected]
+    if not isinstance(block, dict):
+        raise ValueError(f"experiment.toml [profiles.{selected}] is not a table")
+    merged = dict(data)
+    for k, v in block.items():
+        if isinstance(v, dict):  # a section override → deep-merge onto the base table
+            cur = merged.get(k)
+            merged[k] = _deep_merge(cur if isinstance(cur, dict) else {}, v)
+        # scalar profile keys (description / certified / …) are metadata, not merged
+    return merged, str(selected)
+
+
+def load_experiment_config(
+    path: str | Path | None = None, *, profile: str | None = None
+) -> ExperimentConfig:
     """Load `experiment.toml`. `path` may be the file, a directory containing
     it, or None (→ walk up from cwd to find it). A missing file yields an empty
     config (every knob then has to be supplied by flag), never an error — the
-    file is a convenience, not a requirement."""
+    file is a convenience, not a requirement.
+
+    `profile` selects a `[profiles.<name>]` override-set (see `_resolve_profile`);
+    when None it falls back to the `AUSPEXAI_PROFILE` env var, so the active
+    profile a `run`/`launch` selected propagates to a driver factory that re-loads
+    the config itself (e.g. Vigiles' `drift_driver.build`) with no extra wiring.
+    An EXPLICIT `profile=` against a missing file is a hard error (the caller asked
+    for a profile that can't be honored); the env-var fallback degrades to empty."""
+    explicit = profile is not None
+    effective_profile = profile if explicit else (os.environ.get(PROFILE_ENV_VAR) or None)
     if path is not None:
         p = Path(path)
         if p.is_dir():
@@ -101,16 +179,26 @@ def load_experiment_config(path: str | Path | None = None) -> ExperimentConfig:
     else:
         found = _find_config_upward(Path.cwd())
         if found is None:
+            if explicit and effective_profile:
+                raise ValueError(
+                    f"profile '{effective_profile}' requested but no experiment.toml was found"
+                )
             return ExperimentConfig(source_path=None)
         p = found
     if not p.exists():
+        if explicit and effective_profile:
+            raise ValueError(
+                f"profile '{effective_profile}' requested but no experiment.toml at {p}"
+            )
         return ExperimentConfig(source_path=None)
     data = tomllib.loads(p.read_text(encoding="utf-8"))
+    data, active_profile = _resolve_profile(data, effective_profile)
     return ExperimentConfig(
         experiment=dict(data.get("experiment") or {}),
         driver=dict(data.get("driver") or {}),
         raw=dict(data),
         source_path=p,
+        active_profile=active_profile,
     )
 
 

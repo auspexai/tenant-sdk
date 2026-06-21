@@ -310,6 +310,14 @@ _key_opt = click.option(
     show_default=True,
     help="Tenant key used to sign requests (RFC 9421).",
 )
+_profile_opt = click.option(
+    "--profile",
+    "profile",
+    default=None,
+    help="Select a [profiles.<name>] override-set from experiment.toml "
+    "(e.g. starter / research) — its sub-tables deep-merge onto the base config. "
+    "Default: the base config (or [default_profile] if set).",
+)
 
 
 def _make_client(coordinator: str, key_path: Path) -> TenantClient:
@@ -640,6 +648,7 @@ def _load_key(key_path: Path):
     default=None,
     help="experiment.toml path (default: next to PKG_DIR).",
 )
+@_profile_opt
 @click.option(
     "--exact-label",
     is_flag=True,
@@ -654,7 +663,11 @@ def _load_key(key_path: Path):
     help="Manifest output path (default: PKG_DIR/manifest.json).",
 )
 def experiment_build(
-    pkg_dir: Path, config_path: Path | None, exact_label: bool, out_path: Path | None
+    pkg_dir: Path,
+    config_path: Path | None,
+    profile: str | None,
+    exact_label: bool,
+    out_path: Path | None,
 ) -> None:
     """Assemble PKG_DIR/manifest.json from experiment.toml — the GENERIC build,
     no per-tenant build.py.
@@ -668,7 +681,7 @@ def experiment_build(
         manifest_dict_from_config,
     )
 
-    cfg = load_experiment_config(config_path or pkg_dir.parent)
+    cfg = load_experiment_config(config_path or pkg_dir.parent, profile=profile)
     base = cfg.label
     if not base:
         click.echo(
@@ -693,6 +706,8 @@ def experiment_build(
     out.write_text(json.dumps(m, indent=2) + "\n")
     click.echo(f"manifest:   {out}")
     click.echo(f"label:      {label}")
+    if cfg.active_profile:
+        click.echo(f"profile:    {cfg.active_profile}")
     click.echo(f"package:    {digest[:16]}…")
     click.echo(f"next:       auspexai-tenant experiment submit {pkg_dir} --key <key>")
 
@@ -897,6 +912,7 @@ def parse_duration(s: str) -> float:
     default=None,
     help="experiment.toml path (default: ./experiment.toml if present).",
 )
+@_profile_opt
 @click.option(
     "--doorbell",
     is_flag=True,
@@ -917,6 +933,7 @@ def experiment_run(
     driver_spec: str | None,
     journal_path: Path | None,
     config_path: Path | None,
+    profile: str | None,
     doorbell: bool,
     duration_cap: str | None,
     coordinator: str,
@@ -934,10 +951,14 @@ def experiment_run(
     max_rounds, exhaustion, or a stall policy. Resumable via --journal."""
     from auspexai_tenant.driver import DriverSpec, run_until
     from auspexai_tenant.experiment import Experiment
-    from auspexai_tenant.experiment_config import load_experiment_config
+    from auspexai_tenant.experiment_config import PROFILE_ENV_VAR, load_experiment_config
     from auspexai_tenant.wake import SseWake, sse_line_source
 
-    cfg = load_experiment_config(config_path)
+    # Export the selected profile so the driver factory (which re-loads the config
+    # itself, e.g. drift_driver.build) resolves the SAME profile's [driver] knobs.
+    if profile:
+        os.environ[PROFILE_ENV_VAR] = profile
+    cfg = load_experiment_config(config_path, profile=profile)
     # [driver].path → on sys.path so the entrypoint module (e.g. a `driver/` subdir)
     # imports regardless of cwd; lets `run`/`launch` work from the repo root with no
     # `cd`. Resolved relative to the experiment.toml the walk-up found.
@@ -966,6 +987,8 @@ def experiment_run(
         journal_path = cfg.journal_path(label)
     click.echo(f"experiment: {experiment_id}  (label {label})")
     click.echo(f"journal:    {journal_path}")
+    if cfg.active_profile:
+        click.echo(f"profile:    {cfg.active_profile}")
     exp = Experiment(coordinator, key, experiment_id)
     wake = spec.wake
     if wake is None and doorbell:
@@ -1042,6 +1065,7 @@ def _wait_for_approval(client, experiment_id: str, poll_interval: float) -> str:
     default=None,
     help="experiment.toml path (default: walk up from cwd).",
 )
+@_profile_opt
 @click.option(
     "--exact-label", is_flag=True, help="Use [experiment].label verbatim (no timestamp suffix)."
 )
@@ -1084,6 +1108,7 @@ def experiment_launch(
     ctx: click.Context,
     pkg_dir: Path | None,
     config_path: Path | None,
+    profile: str | None,
     exact_label: bool,
     driver_spec: str | None,
     journal_path: Path | None,
@@ -1104,12 +1129,16 @@ def experiment_launch(
     automatically on approval (Ctrl-C is safe — re-run to resume from the journal).
     PKG_DIR defaults to the `pkg/` next to experiment.toml — so plain `launch`
     works from anywhere in the repo."""
-    from auspexai_tenant.experiment_config import load_experiment_config
+    from auspexai_tenant.experiment_config import PROFILE_ENV_VAR, load_experiment_config
 
     # Validate the cap up front so a typo fails before the build/submit work.
     if duration_cap is not None:
         parse_duration(duration_cap)
-    cfg = load_experiment_config(config_path)
+    # Export the selected profile so the driver's own config re-load resolves it
+    # (build/run also receive it explicitly via the invokes below).
+    if profile:
+        os.environ[PROFILE_ENV_VAR] = profile
+    cfg = load_experiment_config(config_path, profile=profile)
     # Resolve the package dir from the experiment.toml the walk-up found, so plain
     # `launch` works from anywhere in the repo — not only the dir that holds pkg/.
     if pkg_dir is None:
@@ -1132,6 +1161,7 @@ def experiment_launch(
         experiment_build,
         pkg_dir=pkg_dir,
         config_path=config_path,
+        profile=profile,
         exact_label=exact_label,
         out_path=None,
     )
@@ -1160,6 +1190,7 @@ def experiment_launch(
         driver_spec=driver_spec,
         journal_path=journal_path,
         config_path=config_path,
+        profile=profile,
         doorbell=True,
         duration_cap=duration_cap,
         coordinator=coordinator,
