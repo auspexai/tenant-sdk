@@ -14,7 +14,7 @@ import httpx
 from click.testing import CliRunner
 
 from auspexai_tenant.cli import main
-from auspexai_tenant.signing import MaintainerKey
+from auspexai_tenant.signing import TenantKey
 from auspexai_tenant.upload import submit_experiment, submit_experiment_from_files
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -34,7 +34,7 @@ def _manifest() -> dict:
 
 
 def test_submit_posts_signed_json_to_experiments() -> None:
-    key = MaintainerKey.generate()
+    key = TenantKey.generate()
     seen: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -61,7 +61,7 @@ def test_submit_posts_signed_json_to_experiments() -> None:
 
 
 def test_submit_keyid_matches_signing_key() -> None:
-    key = MaintainerKey.generate()
+    key = TenantKey.generate()
     seen: dict[str, str] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -73,7 +73,7 @@ def test_submit_keyid_matches_signing_key() -> None:
 
 
 def test_submit_returns_status_for_4xx() -> None:
-    key = MaintainerKey.generate()
+    key = TenantKey.generate()
 
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(403, text='{"error":"manifest_tenant_mismatch"}')
@@ -87,7 +87,7 @@ def test_submit_returns_status_for_4xx() -> None:
 
 
 def test_submit_strips_trailing_slash() -> None:
-    key = MaintainerKey.generate()
+    key = TenantKey.generate()
     seen: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -99,7 +99,7 @@ def test_submit_strips_trailing_slash() -> None:
 
 
 def test_submit_from_files(tmp_path: Path) -> None:
-    key = MaintainerKey.generate()
+    key = TenantKey.generate()
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text((FIXTURES / "valid_minimal.json").read_text())
     sig_path = tmp_path / "manifest.json.sig"

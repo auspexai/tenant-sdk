@@ -39,7 +39,7 @@ from auspexai_tenant.github_device_flow import (
     default_client_id,
     run_device_flow,
 )
-from auspexai_tenant.signing import MaintainerKey
+from auspexai_tenant.signing import TenantKey
 
 COORD = "https://coord.test"
 
@@ -193,12 +193,12 @@ def test_default_client_id_env_override(monkeypatch: pytest.MonkeyPatch) -> None
 # ---- client wire shape -------------------------------------------------------
 
 
-def _tenant_client(handler, key: MaintainerKey) -> TenantClient:
+def _tenant_client(handler, key: TenantKey) -> TenantClient:
     return TenantClient(COORD, key, client=httpx.Client(transport=httpx.MockTransport(handler)))
 
 
 def test_apply_for_tenant_posts_signed_body() -> None:
-    key = MaintainerKey.generate()
+    key = TenantKey.generate()
     seen: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -247,7 +247,7 @@ def test_apply_for_tenant_body_carries_research_classes() -> None:
     """`research_classes` (taxonomy ids) ride the POST body alongside the
     summary, exactly as passed."""
     seen: dict = {}
-    _tenant_client(_apply_handler(seen), MaintainerKey.generate()).apply_for_tenant(
+    _tenant_client(_apply_handler(seen), TenantKey.generate()).apply_for_tenant(
         github_access_token="gho_secret",
         requested_tenant_id="drift-lab",
         contact_name="Ada Lovelace",
@@ -263,7 +263,7 @@ def test_apply_for_tenant_classes_only_omits_summary_field() -> None:
     """Summary is now optional: classes alone satisfy the contract, and the
     absent summary is OMITTED from the wire body (not sent as null/empty)."""
     seen: dict = {}
-    _tenant_client(_apply_handler(seen), MaintainerKey.generate()).apply_for_tenant(
+    _tenant_client(_apply_handler(seen), TenantKey.generate()).apply_for_tenant(
         github_access_token="gho_secret",
         requested_tenant_id="drift-lab",
         contact_name="Ada Lovelace",
@@ -278,7 +278,7 @@ def test_apply_for_tenant_summary_only_omits_classes_field() -> None:
     """The legacy summary-only call still works, and empty classes are omitted
     from the wire body."""
     seen: dict = {}
-    _tenant_client(_apply_handler(seen), MaintainerKey.generate()).apply_for_tenant(
+    _tenant_client(_apply_handler(seen), TenantKey.generate()).apply_for_tenant(
         github_access_token="gho_secret",
         requested_tenant_id="drift-lab",
         contact_name="Ada Lovelace",
@@ -297,7 +297,7 @@ def test_apply_for_tenant_neither_classes_nor_summary_raises_locally() -> None:
         raise AssertionError("no request must be sent when both fields are missing")
 
     with pytest.raises(ValueError, match="research_classes or research_summary"):
-        _tenant_client(handler, MaintainerKey.generate()).apply_for_tenant(
+        _tenant_client(handler, TenantKey.generate()).apply_for_tenant(
             github_access_token="gho_secret",
             requested_tenant_id="drift-lab",
             contact_name="Ada Lovelace",
@@ -315,7 +315,7 @@ def test_my_tenant_applications_signed_get() -> None:
             200, json={"applications": [{"application_id": "app-1", "status": "pending"}]}
         )
 
-    apps = _tenant_client(handler, MaintainerKey.generate()).my_tenant_applications()
+    apps = _tenant_client(handler, TenantKey.generate()).my_tenant_applications()
     assert apps == [{"application_id": "app-1", "status": "pending"}]
     assert seen["path"] == "/api/v0/tenant-applications/mine"
     assert seen["signed"]
@@ -389,7 +389,7 @@ def test_cli_apply_generates_fresh_key_and_submits(
     # a fresh key was created at the given path and the user was told
     assert key_path.exists()
     assert "Generated a new tenant key" in result.output
-    saved = MaintainerKey.load(key_path)
+    saved = TenantKey.load(key_path)
     assert saved.pubkey_hex in result.output
     # the application was signed by THAT key and carried all the fields + token
     assert captured["signing_pubkey"] == saved.pubkey_hex
@@ -552,7 +552,7 @@ def test_cli_apply_interactive_multi_select_then_optional_summary(
 
 def test_cli_apply_reuses_existing_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     key_path = tmp_path / "tenant_key.pem"
-    existing = MaintainerKey.generate()
+    existing = TenantKey.generate()
     existing.save(key_path)
     _patch_device_flow(monkeypatch)
     captured: dict = {}
@@ -605,7 +605,7 @@ def test_cli_apply_device_flow_failure_exits_nonzero(
 
 def test_cli_apply_status_renders_outcomes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     key_path = tmp_path / "tenant_key.pem"
-    MaintainerKey.generate().save(key_path)
+    TenantKey.generate().save(key_path)
     apps = [
         {
             "application_id": "app-1",
@@ -639,7 +639,7 @@ def test_cli_apply_status_renders_outcomes(tmp_path: Path, monkeypatch: pytest.M
 
 def test_cli_apply_status_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     key_path = tmp_path / "tenant_key.pem"
-    MaintainerKey.generate().save(key_path)
+    TenantKey.generate().save(key_path)
     monkeypatch.setattr(TenantClient, "my_tenant_applications", lambda self: [])
     result = CliRunner().invoke(
         main, ["apply", "--status", "--coordinator", COORD, "--key", str(key_path)]

@@ -1,9 +1,14 @@
-"""Maintainer keypair + manifest signing for the AuspexAI Tenant SDK.
+"""Tenant signing key + manifest signing for the AuspexAI Tenant SDK.
 
-A tenant maintainer holds an Ed25519 keypair used to sign manifests before
+A tenant (researcher) holds an Ed25519 keypair used to sign manifests before
 upload to the coordinator. The keypair lives at `~/.config/auspexai-tenant/
-maintainer_key` (PKCS8 PEM, mode 0600) by default; tenants can override the
+tenant_key` (PKCS8 PEM, mode 0600) by default; tenants can override the
 path via `--key` on every CLI command that consumes it.
+
+This is the only key the Tenant SDK uses — it *is* your researcher credential
+(the same key `auspexai-tenant apply` registers and every command signs with).
+It is unrelated to the operator's maintainer *bearer token*, which lives in a
+different tool and never touches this SDK.
 
 v0.1 limitations (revisit in Phase 2):
 
@@ -18,7 +23,7 @@ v0.1 limitations (revisit in Phase 2):
   Rekor flow signs *releases and receipts*, not tenant manifests. Phase 2+
   may extend Rekor recording to manifests if tenant-impersonation becomes
   a real threat. Until then, the coordinator verifies signatures against
-  a published roster of maintainer pubkeys.
+  a published roster of tenant pubkeys.
 
 The `ManifestSignature` envelope structure is the published wire format —
 see `schemas/manifest_signature_v0_1.json` and `cddl/manifest_signature_v0_1.cddl`.
@@ -49,7 +54,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from auspexai_tenant.manifest import Manifest
 
-DEFAULT_KEY_PATH = Path.home() / ".config" / "auspexai-tenant" / "maintainer_key"
+DEFAULT_KEY_PATH = Path.home() / ".config" / "auspexai-tenant" / "tenant_key"
 
 
 class ManifestSignature(BaseModel):
@@ -81,20 +86,20 @@ class ManifestSignature(BaseModel):
     ]
 
 
-class MaintainerKey:
-    """An Ed25519 keypair held by a tenant maintainer for signing manifests."""
+class TenantKey:
+    """An Ed25519 keypair held by a tenant (researcher) for signing manifests."""
 
     def __init__(self, private_key: Ed25519PrivateKey) -> None:
         self._private = private_key
 
     @classmethod
-    def generate(cls) -> MaintainerKey:
+    def generate(cls) -> TenantKey:
         """Generate a fresh Ed25519 keypair using the system CSPRNG."""
         return cls(Ed25519PrivateKey.generate())
 
     @classmethod
-    def load(cls, path: Path) -> MaintainerKey:
-        """Load a maintainer keypair from a PKCS8 PEM file (no password).
+    def load(cls, path: Path) -> TenantKey:
+        """Load a tenant keypair from a PKCS8 PEM file (no password).
 
         Raises FileNotFoundError if the file is missing, ValueError if the
         contents are not a valid Ed25519 private key.
@@ -148,8 +153,8 @@ def _canonical_manifest_bytes(manifest: Manifest) -> bytes:
     return manifest.model_dump_json().encode("utf-8")
 
 
-def sign_manifest(manifest: Manifest, key: MaintainerKey) -> ManifestSignature:
-    """Sign a manifest with the maintainer's keypair.
+def sign_manifest(manifest: Manifest, key: TenantKey) -> ManifestSignature:
+    """Sign a manifest with the tenant's keypair.
 
     Returns a ManifestSignature envelope ready to write to disk alongside the
     manifest. The signing input is the canonical JSON bytes of the manifest
@@ -166,10 +171,11 @@ def sign_manifest(manifest: Manifest, key: MaintainerKey) -> ManifestSignature:
 def verify_manifest(manifest: Manifest, signature: ManifestSignature) -> bool:
     """Verify that `signature` is a valid signature of `manifest`.
 
-    Returns True if the signature verifies under the embedded maintainer pubkey,
-    False if the signature is invalid. Callers must additionally check that the
-    embedded pubkey is one they trust (e.g., on the coordinator's published
-    roster).
+    Returns True if the signature verifies under the embedded tenant pubkey
+    (the `maintainer_pubkey` wire field — a frozen schema name, not a claim
+    about who holds the key), False if the signature is invalid. Callers must
+    additionally check that the embedded pubkey is one they trust (e.g., on the
+    coordinator's published roster).
     """
     pubkey_bytes = bytes.fromhex(signature.maintainer_pubkey)
     pubkey = Ed25519PublicKey.from_public_bytes(pubkey_bytes)

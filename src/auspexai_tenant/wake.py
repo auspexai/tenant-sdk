@@ -22,7 +22,7 @@ from typing import Any, Protocol, runtime_checkable
 import httpx
 
 from auspexai_tenant.http_signing import Rfc9421Auth
-from auspexai_tenant.signing import MaintainerKey
+from auspexai_tenant.signing import TenantKey
 
 
 class Backoff:
@@ -227,7 +227,7 @@ class SseWake:
 
 def sse_line_source(
     coordinator_url: str,
-    key: MaintainerKey,
+    key: TenantKey,
     experiment_id: str,
     *,
     client: httpx.Client | None = None,

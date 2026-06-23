@@ -34,7 +34,7 @@ import httpx
 from auspexai_tenant.attestation import ResultSetAttestation
 from auspexai_tenant.client import CoordinatorError, TenantClient
 from auspexai_tenant.http_signing import Rfc9421Auth
-from auspexai_tenant.signing import MaintainerKey
+from auspexai_tenant.signing import TenantKey
 
 DEFAULT_TIMEOUT_S = 30.0
 
@@ -141,7 +141,7 @@ class Experiment:
     def __init__(
         self,
         coordinator_url: str,
-        key: MaintainerKey,
+        key: TenantKey,
         experiment_id: str,
         *,
         timeout: float = DEFAULT_TIMEOUT_S,

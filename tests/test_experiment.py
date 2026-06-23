@@ -26,7 +26,7 @@ from auspexai_tenant.experiment import (
     Unit,
     UnitsAlreadySubmittedError,
 )
-from auspexai_tenant.signing import MaintainerKey
+from auspexai_tenant.signing import TenantKey
 
 COORD = "https://coord.test"
 EXP_ID = "exp-test"  # coordinator id (URL path)
@@ -48,8 +48,8 @@ def _client_for(handler) -> httpx.Client:
     return httpx.Client(transport=httpx.MockTransport(handler))
 
 
-def _experiment(handler, *, key: MaintainerKey | None = None) -> Experiment:
-    return Experiment(COORD, key or MaintainerKey.generate(), EXP_ID, client=_client_for(handler))
+def _experiment(handler, *, key: TenantKey | None = None) -> Experiment:
+    return Experiment(COORD, key or TenantKey.generate(), EXP_ID, client=_client_for(handler))
 
 
 def _body(request: httpx.Request) -> dict:
@@ -61,7 +61,7 @@ def _body(request: httpx.Request) -> dict:
 
 def test_submit_units_builds_envelopes_from_metadata_and_signs() -> None:
     seen: list[httpx.Request] = []
-    key = MaintainerKey.generate()
+    key = TenantKey.generate()
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)

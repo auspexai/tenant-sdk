@@ -32,7 +32,7 @@ from auspexai_tenant.client import CoordinatorError, TenantClient
 from auspexai_tenant.http_signing import build_signature_base
 from auspexai_tenant.manifest import compute_package_digest
 from auspexai_tenant.package import build_package_archive
-from auspexai_tenant.signing import MaintainerKey
+from auspexai_tenant.signing import TenantKey
 
 COORD = "https://coord.test"
 
@@ -149,9 +149,9 @@ def test_archive_dereferences_symlinks(tmp_path: Path) -> None:
 # ---- TenantClient.upload_package ----------------------------------------------
 
 
-def _upload(tmp_path: Path, handler) -> tuple[dict, Path, MaintainerKey]:
+def _upload(tmp_path: Path, handler) -> tuple[dict, Path, TenantKey]:
     pkg = _make_pkg(tmp_path / "pkg")
-    key = MaintainerKey.generate()
+    key = TenantKey.generate()
     client = TenantClient(COORD, key, client=httpx.Client(transport=httpx.MockTransport(handler)))
     return client.upload_package(pkg), pkg, key
 
@@ -250,7 +250,7 @@ def test_upload_surfaces_4xx_envelopes(tmp_path: Path, status: int, detail: str)
 def test_cli_package_upload_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     pkg = _make_pkg(tmp_path / "pkg")
     key_path = tmp_path / "key.pem"
-    MaintainerKey.generate().save(key_path)
+    TenantKey.generate().save(key_path)
     digest = compute_package_digest(pkg)
     captured: dict[str, Path] = {}
 

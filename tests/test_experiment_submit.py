@@ -10,7 +10,7 @@ from click.testing import CliRunner
 
 from auspexai_tenant import cli as cli_mod
 from auspexai_tenant.cli import main
-from auspexai_tenant.signing import MaintainerKey
+from auspexai_tenant.signing import TenantKey
 from auspexai_tenant.upload import UploadResult
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -26,7 +26,7 @@ def _pkg(tmp_path: Path) -> Path:
 
 def _keyfile(tmp_path: Path) -> Path:
     kp = tmp_path / "key"
-    MaintainerKey.generate().save(kp)
+    TenantKey.generate().save(kp)
     return kp
 
 

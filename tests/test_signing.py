@@ -1,6 +1,6 @@
 """Tests for the manifest signing toolchain.
 
-Covers: MaintainerKey generate/save/load round-trip, signature creation and
+Covers: TenantKey generate/save/load round-trip, signature creation and
 verification, tamper detection, schema cross-check, and the
 `key generate / key pubkey / manifest sign` CLI commands.
 """
@@ -20,8 +20,8 @@ from auspexai_tenant.cli import main
 from auspexai_tenant.manifest import Manifest
 from auspexai_tenant.schemas import load_schema
 from auspexai_tenant.signing import (
-    MaintainerKey,
     ManifestSignature,
+    TenantKey,
     sign_manifest,
     verify_manifest,
 )
@@ -34,25 +34,25 @@ def _load_minimal() -> Manifest:
     return Manifest.model_validate(raw)
 
 
-# ---- MaintainerKey -----------------------------------------------------------
+# ---- TenantKey -----------------------------------------------------------
 
 
 def test_generate_produces_valid_keypair() -> None:
-    k = MaintainerKey.generate()
+    k = TenantKey.generate()
     assert len(k.pubkey_hex) == 64
     assert all(c in "0123456789abcdef" for c in k.pubkey_hex)
 
 
 def test_save_load_round_trip(tmp_path: Path) -> None:
-    original = MaintainerKey.generate()
+    original = TenantKey.generate()
     path = tmp_path / "key.pem"
     original.save(path)
-    loaded = MaintainerKey.load(path)
+    loaded = TenantKey.load(path)
     assert loaded.pubkey_hex == original.pubkey_hex
 
 
 def test_save_uses_restrictive_permissions(tmp_path: Path) -> None:
-    k = MaintainerKey.generate()
+    k = TenantKey.generate()
     path = tmp_path / "key.pem"
     k.save(path)
     mode = stat.S_IMODE(path.stat().st_mode)
@@ -60,7 +60,7 @@ def test_save_uses_restrictive_permissions(tmp_path: Path) -> None:
 
 
 def test_save_creates_parent_dir(tmp_path: Path) -> None:
-    k = MaintainerKey.generate()
+    k = TenantKey.generate()
     path = tmp_path / "nested" / "deep" / "key.pem"
     k.save(path)
     assert path.is_file()
@@ -71,7 +71,7 @@ def test_load_rejects_non_ed25519_key(tmp_path: Path) -> None:
     path = tmp_path / "bogus.pem"
     path.write_text("not actually a PEM key")
     with pytest.raises(ValueError, match=r"(?i)pem|encod"):
-        MaintainerKey.load(path)
+        TenantKey.load(path)
 
 
 def test_load_rejects_wrong_key_type(tmp_path: Path) -> None:
@@ -92,7 +92,7 @@ def test_load_rejects_wrong_key_type(tmp_path: Path) -> None:
     path = tmp_path / "rsa.pem"
     path.write_bytes(pem)
     with pytest.raises(ValueError, match="Ed25519"):
-        MaintainerKey.load(path)
+        TenantKey.load(path)
 
 
 # ---- sign_manifest / verify_manifest -----------------------------------------
@@ -100,14 +100,14 @@ def test_load_rejects_wrong_key_type(tmp_path: Path) -> None:
 
 def test_sign_and_verify_round_trip() -> None:
     m = _load_minimal()
-    k = MaintainerKey.generate()
+    k = TenantKey.generate()
     sig = sign_manifest(m, k)
     assert verify_manifest(m, sig) is True
 
 
 def test_verify_rejects_tampered_manifest() -> None:
     m = _load_minimal()
-    k = MaintainerKey.generate()
+    k = TenantKey.generate()
     sig = sign_manifest(m, k)
 
     tampered_raw = json.loads((FIXTURES / "valid_minimal.json").read_text())
@@ -119,8 +119,8 @@ def test_verify_rejects_tampered_manifest() -> None:
 
 def test_verify_rejects_wrong_pubkey() -> None:
     m = _load_minimal()
-    signer = MaintainerKey.generate()
-    attacker = MaintainerKey.generate()
+    signer = TenantKey.generate()
+    attacker = TenantKey.generate()
     sig = sign_manifest(m, signer)
 
     forged = ManifestSignature(
@@ -133,7 +133,7 @@ def test_verify_rejects_wrong_pubkey() -> None:
 
 def test_verify_rejects_malformed_base64_signature() -> None:
     m = _load_minimal()
-    k = MaintainerKey.generate()
+    k = TenantKey.generate()
     sig = ManifestSignature(
         sig_v="0.1",
         maintainer_pubkey=k.pubkey_hex,
@@ -144,7 +144,7 @@ def test_verify_rejects_malformed_base64_signature() -> None:
 
 def test_signature_validates_against_published_schema() -> None:
     m = _load_minimal()
-    k = MaintainerKey.generate()
+    k = TenantKey.generate()
     sig = sign_manifest(m, k)
     schema = load_schema("manifest_signature_v0_1.json")
     jsonschema.validate(json.loads(sig.model_dump_json()), schema)
@@ -170,7 +170,7 @@ def test_cli_key_generate_creates_keypair(tmp_path: Path) -> None:
     assert "Public key:" in result.output
     assert key_path.exists()
     # Load it to verify it's actually a valid keypair
-    MaintainerKey.load(key_path)
+    TenantKey.load(key_path)
 
 
 def test_cli_key_generate_refuses_to_overwrite(tmp_path: Path) -> None:

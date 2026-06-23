@@ -1,10 +1,10 @@
 """auspexai-tenant CLI entrypoint.
 
 v0.1 commands:
-    auspexai-tenant key generate            # generate maintainer Ed25519 keypair
-    auspexai-tenant key pubkey              # print maintainer public key
+    auspexai-tenant key generate            # generate your tenant Ed25519 keypair
+    auspexai-tenant key pubkey              # print your tenant public key
     auspexai-tenant manifest validate       # validate a manifest against the schema
-    auspexai-tenant manifest sign           # sign a manifest with the maintainer key
+    auspexai-tenant manifest sign           # sign a manifest with your tenant key
     auspexai-tenant manifest upload         # POST a (signed) manifest to a coordinator
     auspexai-tenant receipts show           # pretty-print a CBOR-encoded receipt
 
@@ -38,8 +38,8 @@ from auspexai_tenant.manifest import Manifest, compute_package_digest
 from auspexai_tenant.receipts import decode_cbor
 from auspexai_tenant.signing import (
     DEFAULT_KEY_PATH,
-    MaintainerKey,
     ManifestSignature,
+    TenantKey,
     sign_manifest,
 )
 from auspexai_tenant.upload import submit_experiment_from_files
@@ -58,7 +58,7 @@ def main() -> None:
 
 @main.group()
 def key() -> None:
-    """Maintainer key commands."""
+    """Tenant key commands."""
 
 
 @key.command("generate")
@@ -76,16 +76,16 @@ def key() -> None:
     help="Overwrite an existing keypair at the output path.",
 )
 def key_generate(output: Path, force: bool) -> None:
-    """Generate a fresh Ed25519 maintainer keypair."""
+    """Generate a fresh Ed25519 tenant keypair."""
     if output.exists() and not force:
         click.echo(
             f"ERROR: {output} already exists. Re-run with --force to overwrite.",
             err=True,
         )
         sys.exit(1)
-    new_key = MaintainerKey.generate()
+    new_key = TenantKey.generate()
     new_key.save(output)
-    click.echo(f"Generated maintainer key at {output}")
+    click.echo(f"Generated tenant key at {output}")
     click.echo(f"Public key: {new_key.pubkey_hex}")
     click.echo("Register this public key with the AuspexAI coordinator to enable manifest uploads.")
 
@@ -97,12 +97,12 @@ def key_generate(output: Path, force: bool) -> None:
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     default=DEFAULT_KEY_PATH,
     show_default=True,
-    help="Path to the maintainer keypair PEM file.",
+    help="Path to your tenant keypair PEM file.",
 )
 def key_pubkey(key_path: Path) -> None:
-    """Print the public key from a maintainer keypair."""
+    """Print the public key from a tenant keypair."""
     try:
-        k = MaintainerKey.load(key_path)
+        k = TenantKey.load(key_path)
     except (FileNotFoundError, ValueError) as e:
         click.echo(f"ERROR: failed to load key from {key_path}: {e}", err=True)
         sys.exit(1)
@@ -146,7 +146,7 @@ def manifest_validate(path: Path) -> None:
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     default=DEFAULT_KEY_PATH,
     show_default=True,
-    help="Path to the maintainer keypair PEM file.",
+    help="Path to your tenant keypair PEM file.",
 )
 @click.option(
     "--output",
@@ -156,7 +156,7 @@ def manifest_validate(path: Path) -> None:
     help="Where to write the signature file (default: <manifest>.sig).",
 )
 def manifest_sign(path: Path, key_path: Path, output: Path | None) -> None:
-    """Sign a manifest with the maintainer keypair. Produces <manifest>.sig."""
+    """Sign a manifest with your tenant keypair. Produces <manifest>.sig."""
     try:
         raw = json.loads(path.read_text())
         m = Manifest.model_validate(raw)
@@ -168,7 +168,7 @@ def manifest_sign(path: Path, key_path: Path, output: Path | None) -> None:
         sys.exit(1)
 
     try:
-        k = MaintainerKey.load(key_path)
+        k = TenantKey.load(key_path)
     except (FileNotFoundError, ValueError) as e:
         click.echo(f"ERROR: failed to load key from {key_path}: {e}", err=True)
         sys.exit(1)
@@ -178,7 +178,7 @@ def manifest_sign(path: Path, key_path: Path, output: Path | None) -> None:
     sig_path.write_text(sig.model_dump_json(indent=2) + "\n")
     click.echo(f"OK: signed {path}")
     click.echo(f"Signature: {sig_path}")
-    click.echo(f"Maintainer pubkey: {k.pubkey_hex}")
+    click.echo(f"Tenant pubkey: {k.pubkey_hex}")
 
 
 @manifest.command("upload")
@@ -201,7 +201,7 @@ def manifest_sign(path: Path, key_path: Path, output: Path | None) -> None:
     type=click.Path(path_type=Path),
     default=DEFAULT_KEY_PATH,
     show_default=True,
-    help="Maintainer key used to sign the request (RFC 9421).",
+    help="Tenant key used to sign the request (RFC 9421).",
 )
 @click.option(
     "--dry-run",
@@ -214,7 +214,7 @@ def manifest_upload(
     """Submit a manifest + signature to a coordinator's `POST /experiments`.
 
     The request is authenticated with an RFC 9421 HTTP Message Signature using
-    the maintainer key; the coordinator resolves the signing key to your tenant.
+    your tenant key; the coordinator resolves the signing key to your tenant.
     A signature file (from `manifest sign`) is required.
     """
     if sig_path is None:
@@ -237,7 +237,7 @@ def manifest_upload(
         return
 
     try:
-        k = MaintainerKey.load(key_path)
+        k = TenantKey.load(key_path)
     except (FileNotFoundError, ValueError) as e:
         click.echo(f"ERROR: failed to load key from {key_path}: {e}", err=True)
         sys.exit(1)
@@ -322,7 +322,7 @@ _profile_opt = click.option(
 
 def _make_client(coordinator: str, key_path: Path) -> TenantClient:
     try:
-        k = MaintainerKey.load(key_path)
+        k = TenantKey.load(key_path)
     except (FileNotFoundError, ValueError) as e:
         click.echo(f"ERROR: failed to load key from {key_path}: {e}", err=True)
         sys.exit(1)
@@ -633,7 +633,7 @@ def _load_attr(spec: str):
 
 def _load_key(key_path: Path):
     try:
-        return MaintainerKey.load(key_path)
+        return TenantKey.load(key_path)
     except (FileNotFoundError, ValueError) as e:
         click.echo(f"ERROR: failed to load key from {key_path}: {e}", err=True)
         sys.exit(1)
@@ -1360,14 +1360,14 @@ def package_upload(pkg_dir: Path, coordinator: str, key_path: Path) -> None:
 # ----------------------------------------------------------------------------
 
 
-def _ensure_key(key_path: Path) -> tuple[MaintainerKey, bool]:
+def _ensure_key(key_path: Path) -> tuple[TenantKey, bool]:
     """Load the tenant key at `key_path`, generating one if missing.
 
     Returns (key, created). A corrupt existing file is an error (we never
     silently overwrite key material)."""
     if key_path.exists():
         return _load_key(key_path), False
-    new_key = MaintainerKey.generate()
+    new_key = TenantKey.generate()
     new_key.save(key_path)
     return new_key, True
 

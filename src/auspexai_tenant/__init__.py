@@ -81,8 +81,8 @@ from auspexai_tenant.receipts import (
 from auspexai_tenant.reducer import ReducerDecision, ReducerFn, ReducerHarness
 from auspexai_tenant.signing import (
     DEFAULT_KEY_PATH,
-    MaintainerKey,
     ManifestSignature,
+    TenantKey,
     sign_manifest,
     verify_manifest,
 )
@@ -132,7 +132,6 @@ __all__ = [
     "Histogram",
     "HttpWorkUnitSource",
     "LifecycleConflictError",
-    "MaintainerKey",
     "Manifest",
     "ManifestSignature",
     "MaxUnitsExceededError",
@@ -164,6 +163,7 @@ __all__ = [
     "SubmissionsFinalizedError",
     "SubmitResult",
     "TenantClient",
+    "TenantKey",
     "TimeWindow",
     "TimerWake",
     "TransferVerification",

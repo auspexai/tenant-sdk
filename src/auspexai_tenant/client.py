@@ -2,7 +2,7 @@
 
 The SDK's first *read* surface. A researcher fetches their experiments, results,
 receipts, and the offload bundle over RFC 9421-signed GETs — authenticated with
-the same tenant maintainer key that signs experiment submission. Mirrors
+the same tenant key that signs experiment submission. Mirrors
 `upload.py`'s httpx + `Rfc9421Auth` pattern; pass `client` (an `httpx.Client`
 backed by `httpx.MockTransport`) to exercise it offline in tests.
 
@@ -31,7 +31,7 @@ from auspexai_tenant.attestation import ResultSetAttestation
 from auspexai_tenant.http_signing import Rfc9421Auth
 from auspexai_tenant.manifest import compute_package_digest
 from auspexai_tenant.package import build_package_archive
-from auspexai_tenant.signing import MaintainerKey
+from auspexai_tenant.signing import TenantKey
 
 DEFAULT_TIMEOUT_S = 30.0
 
@@ -66,7 +66,7 @@ class TenantClient:
     def __init__(
         self,
         coordinator_url: str,
-        key: MaintainerKey,
+        key: TenantKey,
         *,
         timeout: float = DEFAULT_TIMEOUT_S,
         client: httpx.Client | None = None,

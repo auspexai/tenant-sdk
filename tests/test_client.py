@@ -15,7 +15,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from auspexai_tenant.client import CoordinatorError, TenantClient, verify_transfer
-from auspexai_tenant.signing import MaintainerKey
+from auspexai_tenant.signing import TenantKey
 
 COORD = "https://coord.test"
 
@@ -25,12 +25,12 @@ def _client_for(handler) -> httpx.Client:
 
 
 def _tenant(handler) -> TenantClient:
-    return TenantClient(COORD, MaintainerKey.generate(), client=_client_for(handler))
+    return TenantClient(COORD, TenantKey.generate(), client=_client_for(handler))
 
 
 def test_requests_are_rfc9421_signed() -> None:
     seen: list[httpx.Request] = []
-    key = MaintainerKey.generate()
+    key = TenantKey.generate()
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)

@@ -3,7 +3,7 @@
 A researcher submits an experiment by POSTing its manifest (and detached
 ManifestSignature) as JSON to `POST /api/v0/experiments`, authenticated with
 an RFC 9421 HTTP Message Signature over the request (the researcher's tenant
-maintainer key — see `http_signing`). The coordinator resolves the signing
+key — see `http_signing`). The coordinator resolves the signing
 key to a tenant and enforces `manifest.tenant_id == credential.tenant_id`.
 
 This replaces the earlier multipart `/api/v0/manifests` shape, which targeted
@@ -21,7 +21,7 @@ from typing import Any
 import httpx
 
 from auspexai_tenant.http_signing import Rfc9421Auth
-from auspexai_tenant.signing import MaintainerKey
+from auspexai_tenant.signing import TenantKey
 
 DEFAULT_TIMEOUT_S = 30.0
 EXPERIMENTS_PATH = "/api/v0/experiments"
@@ -40,7 +40,7 @@ def submit_experiment(
     manifest: dict[str, Any],
     signature: dict[str, Any],
     coordinator_url: str,
-    key: MaintainerKey,
+    key: TenantKey,
     *,
     timeout: float = DEFAULT_TIMEOUT_S,
     client: httpx.Client | None = None,
@@ -76,7 +76,7 @@ def submit_experiment_from_files(
     manifest_path: Path,
     signature_path: Path,
     coordinator_url: str,
-    key: MaintainerKey,
+    key: TenantKey,
     *,
     timeout: float = DEFAULT_TIMEOUT_S,
     client: httpx.Client | None = None,

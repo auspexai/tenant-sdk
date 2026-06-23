@@ -33,7 +33,7 @@ from datetime import UTC, datetime
 
 import httpx
 
-from auspexai_tenant.signing import MaintainerKey
+from auspexai_tenant.signing import TenantKey
 
 SUPPORTED_ALG = "ed25519"
 SIGNATURE_LABEL = "sig1"
@@ -83,7 +83,7 @@ def build_signature_base(
 
 def sign_request(
     *,
-    key: MaintainerKey,
+    key: TenantKey,
     method: str,
     path: str,
     authority: str,
@@ -95,7 +95,7 @@ def sign_request(
     is non-empty) headers for an Ed25519-signed request.
 
     Returns a dict of headers to merge onto the outgoing request. `key` is the
-    tenant maintainer keypair; its public key becomes the `keyid` the
+    tenant keypair; its public key becomes the `keyid` the
     coordinator resolves to the tenant.
     """
     if created is None:
@@ -145,11 +145,11 @@ def _request_authority(request: httpx.Request) -> str:
 
 class Rfc9421Auth(httpx.Auth):
     """An `httpx.Auth` that signs every outgoing request with a tenant
-    maintainer key, so the coordinator authenticates it as that tenant's
+    key, so the coordinator authenticates it as that tenant's
     researcher credential.
 
     Usage:
-        key = MaintainerKey.load(path)
+        key = TenantKey.load(path)
         with httpx.Client(auth=Rfc9421Auth(key)) as client:
             client.post("https://coord.auspexai.network/api/v0/experiments", json=body)
     """
@@ -157,7 +157,7 @@ class Rfc9421Auth(httpx.Auth):
     # We need the (already-encoded) request body to compute content-digest.
     requires_request_body = True
 
-    def __init__(self, key: MaintainerKey, *, covered: tuple[str, ...] | None = None) -> None:
+    def __init__(self, key: TenantKey, *, covered: tuple[str, ...] | None = None) -> None:
         self._key = key
         self._covered = covered
 

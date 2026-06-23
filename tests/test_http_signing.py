@@ -22,15 +22,15 @@ from auspexai_tenant.http_signing import (
     compute_content_digest,
     sign_request,
 )
-from auspexai_tenant.signing import MaintainerKey
+from auspexai_tenant.signing import TenantKey
 
 
 @pytest.fixture
-def key() -> MaintainerKey:
-    return MaintainerKey.generate()
+def key() -> TenantKey:
+    return TenantKey.generate()
 
 
-def _pubkey(key: MaintainerKey) -> Ed25519PublicKey:
+def _pubkey(key: TenantKey) -> Ed25519PublicKey:
     return Ed25519PublicKey.from_public_bytes(bytes.fromhex(key.pubkey_hex))
 
 
@@ -46,13 +46,13 @@ def _parse_input(value: str) -> tuple[str, dict[str, str]]:
     return covered_and_params, params
 
 
-def test_content_digest_format(key: MaintainerKey) -> None:
+def test_content_digest_format(key: TenantKey) -> None:
     body = b'{"a":1}'
     expected = base64.b64encode(hashlib.sha256(body).digest()).decode()
     assert compute_content_digest(body) == f"sha-256=:{expected}:"
 
 
-def test_sign_request_headers_and_format(key: MaintainerKey) -> None:
+def test_sign_request_headers_and_format(key: TenantKey) -> None:
     body = b'{"manifest":{}}'
     headers = sign_request(
         key=key,
@@ -73,7 +73,7 @@ def test_sign_request_headers_and_format(key: MaintainerKey) -> None:
     assert headers["Content-Digest"] == compute_content_digest(body)
 
 
-def test_signature_verifies_over_canonical_base(key: MaintainerKey) -> None:
+def test_signature_verifies_over_canonical_base(key: TenantKey) -> None:
     body = b'{"x":1}'
     headers = sign_request(
         key=key,
@@ -106,7 +106,7 @@ def test_signature_verifies_over_canonical_base(key: MaintainerKey) -> None:
     _pubkey(key).verify(sig, base)  # raises on failure
 
 
-def test_empty_body_omits_content_digest(key: MaintainerKey) -> None:
+def test_empty_body_omits_content_digest(key: TenantKey) -> None:
     headers = sign_request(
         key=key, method="GET", path="/api/v0/experiments", authority="h", body=b""
     )
@@ -115,7 +115,7 @@ def test_empty_body_omits_content_digest(key: MaintainerKey) -> None:
     assert "content-digest" not in raw
 
 
-def test_rfc9421_auth_signs_outgoing_request(key: MaintainerKey) -> None:
+def test_rfc9421_auth_signs_outgoing_request(key: TenantKey) -> None:
     seen: dict[str, str] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
