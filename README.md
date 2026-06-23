@@ -9,14 +9,20 @@ convergence, and walk away holding a **cryptographically verified copy of the
 data** — receipts, a Rekor-anchored attestation, and a signed custody record
 included.
 
-Python ≥ 3.11, Apache-2.0. Install from a
-[GitHub release](https://github.com/auspexai/tenant-sdk/releases) or git:
+Python ≥ 3.11, Apache-2.0. Install from PyPI:
 
 ```bash
-pip install "auspexai-tenant @ git+https://github.com/auspexai/tenant-sdk.git@v0.5.1"
+pip install auspexai-tenant
 # with the analysis surface (pandas/Parquet evidence loader):
-pip install "auspexai-tenant[analysis] @ git+https://github.com/auspexai/tenant-sdk.git@v0.5.1"
+pip install "auspexai-tenant[analysis]"
 ```
+
+Most researchers don't install the SDK directly — the
+[researcher onramp](https://getresearcher.auspexai.network) (`curl -fsSL
+https://getresearcher.auspexai.network | bash`) provisions it alongside the
+dashboard. Releases are also on the
+[releases page](https://github.com/auspexai/tenant-sdk/releases),
+Sigstore-signed.
 
 **New researcher?** The full front door — install, apply for a tenant via
 `auspexai-tenant apply` (GitHub device flow, no key material to paste), and
