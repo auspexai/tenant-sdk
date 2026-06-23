@@ -75,12 +75,23 @@ class ExperimentConfig:
         the SDK signs with it, so `--key` need not be passed on every command."""
         return self.experiment.get("key_path")
 
+    @property
+    def runs_dir(self) -> str | None:
+        """`[runs].dir` — the base directory for per-run local artifacts (the
+        evidence bundle, journal, results). Unset ⇒ the SDK default
+        (`$AUSPEXAI_RUNS_DIR`, else `./runs`). See `auspexai_tenant.runs`."""
+        r = self.raw.get("runs")
+        return r.get("dir") if isinstance(r, dict) else None
+
     def journal_path(self, label: str) -> Path:
-        """The run-journal path: an explicit `[driver].journal`, or
-        `<label>.journal` when it is unset / "auto"."""
+        """The run-journal path: an explicit `[driver].journal` wins; otherwise
+        the shared per-run layout `<runs_base>/<label>/run.journal`, so the
+        journal lands beside its evidence bundle instead of in the CWD root."""
         j = self.driver.get("journal")
         if j in (None, "", "auto"):
-            return Path(f"{label}.journal")
+            from auspexai_tenant.runs import RunLayout, runs_base
+
+            return RunLayout(label, base=runs_base(self.runs_dir)).journal_path()
         return Path(j)
 
 

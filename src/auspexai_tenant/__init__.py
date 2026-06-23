@@ -79,6 +79,7 @@ from auspexai_tenant.receipts import (
     encode_cbor,
 )
 from auspexai_tenant.reducer import ReducerDecision, ReducerFn, ReducerHarness
+from auspexai_tenant.runs import RunLayout, runs_base
 from auspexai_tenant.signing import (
     DEFAULT_KEY_PATH,
     ManifestSignature,
@@ -151,6 +152,7 @@ __all__ = [
     "ResumeState",
     "Rfc9421Auth",
     "RunJournal",
+    "RunLayout",
     "RunResult",
     "RunningAggregate",
     "SensitiveContentFlag",
@@ -184,6 +186,7 @@ __all__ = [
     "merkle_root",
     "resume_state",
     "run_until",
+    "runs_base",
     "sign_manifest",
     "sign_request",
     "sse_line_source",

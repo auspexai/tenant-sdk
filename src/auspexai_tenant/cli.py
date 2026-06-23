@@ -36,6 +36,7 @@ from auspexai_tenant.github_device_flow import (
 )
 from auspexai_tenant.manifest import Manifest, compute_package_digest
 from auspexai_tenant.receipts import decode_cbor
+from auspexai_tenant.runs import RunLayout
 from auspexai_tenant.signing import (
     DEFAULT_KEY_PATH,
     ManifestSignature,
@@ -440,7 +441,7 @@ def experiment_attestation(
 
 
 @experiment.command("export")
-@click.argument("experiment_id")
+@click.argument("target")
 @_coord_opt
 @_key_opt
 @click.option(
@@ -449,7 +450,7 @@ def experiment_attestation(
     "output",
     type=click.Path(dir_okay=False, path_type=Path),
     default=None,
-    help="Bundle output path (default: <experiment_id>-bundle.json).",
+    help="Bundle output path (default: runs/<label>/bundle.json).",
 )
 @click.option(
     "--verify/--no-verify",
@@ -477,7 +478,7 @@ def experiment_attestation(
     help="Skip signer grounding — accept self-consistency only.",
 )
 def experiment_export(
-    experiment_id: str,
+    target: str,
     coordinator: str,
     key_path: Path,
     output: Path | None,
@@ -487,6 +488,10 @@ def experiment_export(
     no_pin: bool,
 ) -> None:
     """Take custody of the evidence bundle (EB-1, §9 #47).
+
+    TARGET is a coordinator experiment id (`exp-…`), a tenant label, or the
+    literal `latest` — the label keys the local run directory so the bundle
+    lands beside its journal under runs/<label>/.
 
     Downloads the self-contained bundle (manifest + work-unit inputs +
     consensus results + receipts + the Rekor-anchored attestation + a signed
@@ -499,8 +504,12 @@ def experiment_export(
     from auspexai_tenant.evidence import verify_bundle
 
     client = _make_client(coordinator, key_path)
-    bundle = _run(lambda: client.export(experiment_id))
-    out = output or Path(f"{experiment_id}-bundle.json")
+    # Accept an exp- id, a tenant label, or 'latest' (like `run`); the resolved
+    # label keys the local run directory so the bundle co-locates with the
+    # journal under runs/<label>/.
+    exp_id, label = _resolve_experiment(client, target)
+    bundle = _run(lambda: client.export(exp_id))
+    out = output or RunLayout(label).bundle_path()
     # The coordinator already delivered (and armed collection age-off) by the
     # time we write, so a missing -o parent dir must NOT lose the bundle: make
     # the parent before writing. Re-export re-delivers idempotently until

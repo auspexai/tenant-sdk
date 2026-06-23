@@ -70,6 +70,9 @@ def test_experiment_export_creates_missing_parent_dir(
     FileNotFoundError — the coordinator already armed collection by then."""
 
     class FakeClient:
+        def get_experiment(self, experiment_id: str) -> dict[str, object]:
+            return {"experiment_id": experiment_id, "tenant_experiment_label": "lab-x"}
+
         def export(self, experiment_id: str) -> dict[str, object]:
             return {"transfer": {"transfer_id": "t-1", "root_kind": "attestation"}}
 
@@ -80,3 +83,24 @@ def test_experiment_export_creates_missing_parent_dir(
     )
     assert result.exit_code == 0, result.output
     assert out.exists()
+
+
+def test_experiment_export_default_lands_in_runs_layout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no -o, the bundle defaults to runs/<label>/bundle.json — keyed by the
+    tenant LABEL (resolved from the exp- id), so it co-locates with the journal."""
+    monkeypatch.delenv("AUSPEXAI_RUNS_DIR", raising=False)
+
+    class FakeClient:
+        def get_experiment(self, experiment_id: str) -> dict[str, object]:
+            return {"experiment_id": experiment_id, "tenant_experiment_label": "drift-a1"}
+
+        def export(self, experiment_id: str) -> dict[str, object]:
+            return {"transfer": {"transfer_id": "t-1", "root_kind": "attestation"}}
+
+    monkeypatch.setattr(cli_mod, "_make_client", lambda c, k: FakeClient())
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(main, ["experiment", "export", "exp-x", "--no-verify"])
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "runs" / "drift-a1" / "bundle.json").exists()

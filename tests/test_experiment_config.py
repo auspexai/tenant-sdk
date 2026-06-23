@@ -54,14 +54,22 @@ def test_parses_both_tables(tmp_path: Path):
     assert cfg.driver["cadence_seconds"] == 300  # opaque pass-through
 
 
-def test_journal_path_auto_vs_explicit(tmp_path: Path):
+def test_journal_path_auto_vs_explicit(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("AUSPEXAI_RUNS_DIR", raising=False)
+    # auto → the shared per-run layout: runs/<label>/run.journal (beside the bundle)
     (tmp_path / "experiment.toml").write_text('[driver]\njournal = "auto"\n')
-    assert load_experiment_config(tmp_path).journal_path("vig-1") == Path("vig-1.journal")
+    assert load_experiment_config(tmp_path).journal_path("vig-1") == Path("runs/vig-1/run.journal")
+    # an explicit [driver].journal still wins verbatim
     (tmp_path / "experiment.toml").write_text('[driver]\njournal = "runs/my.journal"\n')
     assert load_experiment_config(tmp_path).journal_path("vig-1") == Path("runs/my.journal")
-    # journal unset → also <label>.journal
+    # journal unset → also the per-run layout
     (tmp_path / "experiment.toml").write_text("[driver]\nentrypoint = 'd:b'\n")
-    assert load_experiment_config(tmp_path).journal_path("vig-2") == Path("vig-2.journal")
+    assert load_experiment_config(tmp_path).journal_path("vig-2") == Path("runs/vig-2/run.journal")
+    # [runs].dir overrides the base directory
+    (tmp_path / "experiment.toml").write_text('[runs]\ndir = "/data/auspexai"\n')
+    assert load_experiment_config(tmp_path).journal_path("vig-3") == Path(
+        "/data/auspexai/vig-3/run.journal"
+    )
 
 
 def test_explicit_file_path(tmp_path: Path):
