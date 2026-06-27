@@ -63,10 +63,8 @@ coordinator (`https://coord.auspexai.network`).
   immutable once submitted (manifest-swap protection: work units bind the
   manifest hash); a maintainer approves the experiment before any work is
   scheduled.
-- **Demand signals**: `model request`/`model catalog` (ask the network for a
-  model; volunteers elect to host it) and `software request`/`software list`
-  (ask for a worker-baseline capability; tracked through an assessed,
-  audited review pipeline).
+- **Model catalog**: `model catalog` surfaces the network's bottom-up model
+  catalog — the emergent set of models the active workers declare they serve.
 
 ### 3. Drive
 
@@ -135,8 +133,7 @@ verifies all of it independently:
 | `manifest` | validate, sign, upload an experiment manifest |
 | `experiment` | list, status, run (autonomic driver), results, receipts, attestation, reduce, export |
 | `bundle` | verify a saved evidence bundle offline; write it as a CSV/Parquet table |
-| `model` | network model catalog + BYOM model requests |
-| `software` | worker-capability requests (the code-plane demand board) |
+| `model` | browse the network model catalog |
 | `receipts` | decode/pretty-print CBOR receipts |
 
 Every command has `--help` with the full contract.
@@ -152,11 +149,16 @@ Every command has `--help` with the full contract.
 
 ## Status
 
-**Closed beta.** The coordinator is live and the first tenant's experiments
-run on real volunteer hardware end-to-end (work-unit dispatch, consensus,
-receipts, live Rekor anchoring, evidence-bundle custody). Tenant
-registration is maintainer-gated during the beta — there is no self-serve
-signup yet. Interested in running research on the network? Email
+**Open beta.** The coordinator is live and experiments run on real volunteer
+hardware end-to-end (work-unit dispatch, consensus, receipts, live Rekor
+anchoring, evidence-bundle custody). The network is publicly installable: a
+researcher self-onboards with the
+[getresearcher](https://getresearcher.auspexai.network) one-liner, connects
+with GitHub or ORCID, and runs a certified starter experiment with no
+maintainer step. Bringing your own experiment — your own tenant or your own
+code — is still reviewed against the [Research Ethics
+Policy](https://github.com/auspexai/.github/blob/main/RESEARCH_ETHICS_POLICY.md).
+Questions about running research on the network? Email
 **contact@auspexai.network**.
 
 ## Scope & license boundary

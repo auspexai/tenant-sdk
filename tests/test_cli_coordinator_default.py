@@ -2,7 +2,7 @@
 network (v0.5.7).
 
 `_coord_opt` backs every researcher-facing command (experiment list/status/
-export/results/receipts/run/reduce/catalog, software request/list). It used to
+export/results/receipts/run/reduce, model catalog). It used to
 be required=True, which made `experiment export …` (the evidence-custody path)
 demand a --coordinator that `apply`/`package upload` did not — pure friction.
 This pins the front-door default + AUSPEXAI_COORDINATOR_URL override so the

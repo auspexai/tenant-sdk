@@ -187,7 +187,7 @@ class TenantClient:
             raise CoordinatorError(resp.status_code, resp.text)
         return resp.json()
 
-    # ---- demand-board (model requests, M2 / §9 #32/#39) ----
+    # ---- demand-board (model catalog, §9 #39) ----
 
     def _post(self, path: str, body: dict[str, Any]) -> Any:
         url = f"{self._base}{path}"
@@ -204,44 +204,6 @@ class TenantClient:
         """The network's bottom-up model catalog — the emergent set of models
         active workers declare: {models:[{model_id, worker_count}], total_active_workers}."""
         return self._get("/api/v0/models/catalog")
-
-    def request_model(
-        self, model_id: str, *, reason: str, hf_repo: str | None = None
-    ) -> dict[str, Any]:
-        """Signal demand for a model (BYOM, §5.8). `model_id` is the worker store
-        id (`<repo-slug>-<quant>`). Recorded as a demand signal; if no active
-        worker holds it the request enters the maintainer review queue
-        (status `pending`), otherwise it's `available`."""
-        body: dict[str, Any] = {"model_id": model_id, "reason": reason}
-        if hf_repo:
-            body["hf_repo"] = hf_repo
-        return self._post("/api/v0/model-requests", body)
-
-    def list_my_model_requests(self, *, status: str | None = None) -> list[dict[str, Any]]:
-        """Your tenant's model requests (the coordinator scopes the list to the
-        signing credential's tenant)."""
-        params = {"status": status} if status else None
-        return self._get("/api/v0/model-requests", params).get("requests") or []
-
-    # ---- software requests (code-plane requirements, §9 #46) ----
-
-    def request_software(self, title: str, *, description: str, reason: str) -> dict[str, Any]:
-        """Signal demand for a worker-baseline CAPABILITY the network doesn't
-        provide (e.g. an inference backend, a new runtime) — the code-plane
-        analog of `request_model`. Always enters the maintainer review queue
-        (status `pending`); the maintainer attaches a dependencies/security/
-        alternatives assessment before approving/declining, and a recorded
-        release later fulfils it (status `released`, with `release_version`)."""
-        return self._post(
-            "/api/v0/software-requests",
-            {"title": title, "description": description, "reason": reason},
-        )
-
-    def list_my_software_requests(self, *, status: str | None = None) -> list[dict[str, Any]]:
-        """Your tenant's software requests, incl. assessment + resolution +
-        fulfilling release_version (tenant-scoped by the coordinator)."""
-        params = {"status": status} if status else None
-        return self._get("/api/v0/software-requests", params).get("requests") or []
 
     # ---- tenant applications (apply-from-CLI onboarding, Option D) ----------
 
