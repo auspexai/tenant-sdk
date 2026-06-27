@@ -151,15 +151,16 @@ Every command has `--help` with the full contract.
 
 **Open beta.** The coordinator is live and experiments run on real volunteer
 hardware end-to-end (work-unit dispatch, consensus, receipts, live Rekor
-anchoring, evidence-bundle custody). The network is publicly installable: a
-researcher self-onboards with the
-[getresearcher](https://getresearcher.auspexai.network) one-liner, connects
-with GitHub or ORCID, and runs a certified starter experiment with no
-maintainer step. Bringing your own experiment — your own tenant or your own
-code — is still reviewed against the [Research Ethics
-Policy](https://github.com/auspexai/.github/blob/main/RESEARCH_ETHICS_POLICY.md).
-Questions about running research on the network? Email
-**contact@auspexai.network**.
+anchoring, evidence-bundle custody). The network is publicly installable:
+researchers self-onboard with the
+[getresearcher](https://getresearcher.auspexai.network) one-liner and apply for
+a tenant via `auspexai-tenant apply` (GitHub or ORCID device flow — no
+invitation, no key material to paste). A maintainer reviews the application
+against the [Research Ethics
+Policy](https://github.com/auspexai/.github/blob/main/RESEARCH_ETHICS_POLICY.md);
+from there a **certified starter** runs with no code review — the safest first
+run — while bringing your own code is reviewed more closely. Questions about
+running research on the network? Email **contact@auspexai.network**.
 
 ## Scope & license boundary
 
