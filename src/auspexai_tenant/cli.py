@@ -935,6 +935,12 @@ def parse_duration(s: str) -> float:
     help="Wall-clock cap (e.g. 4h, 90m, 1h30m, HH:MM:SS); the run stops + finalizes "
     "at the cap, like max_rounds.",
 )
+@click.option(
+    "--resumable",
+    is_flag=True,
+    help="On Ctrl-C, leave the experiment running server-side (resume later with "
+    "`experiment run <label>`). Default: Ctrl-C aborts the run cleanly.",
+)
 @_coord_opt
 @_key_opt
 def experiment_run(
@@ -945,6 +951,7 @@ def experiment_run(
     profile: str | None,
     doorbell: bool,
     duration_cap: str | None,
+    resumable: bool,
     coordinator: str,
     key_path: Path,
 ) -> None:
@@ -959,7 +966,7 @@ def experiment_run(
     results → fold → test condition → next batch or finalize — until convergence,
     max_rounds, exhaustion, or a stall policy. Resumable via --journal."""
     from auspexai_tenant.driver import DriverSpec, run_until
-    from auspexai_tenant.experiment import Experiment
+    from auspexai_tenant.experiment import Experiment, LifecycleConflictError
     from auspexai_tenant.experiment_config import load_experiment_config
     from auspexai_tenant.wake import SseWake, sse_line_source
 
@@ -1003,19 +1010,44 @@ def experiment_run(
     duration_cap_seconds = (
         parsed_cap if parsed_cap is not None else getattr(spec, "duration_cap_seconds", None)
     )
-    result = _run(
-        lambda: run_until(
-            exp,
-            condition=spec.condition,
-            next_batch=spec.next_batch,
-            reduce=spec.reduce,
-            journal=journal_path,
-            wake=wake,
-            stall=spec.stall,
-            max_rounds=spec.max_rounds,
-            duration_cap_seconds=duration_cap_seconds,
+    try:
+        result = _run(
+            lambda: run_until(
+                exp,
+                condition=spec.condition,
+                next_batch=spec.next_batch,
+                reduce=spec.reduce,
+                journal=journal_path,
+                wake=wake,
+                stall=spec.stall,
+                max_rounds=spec.max_rounds,
+                duration_cap_seconds=duration_cap_seconds,
+            )
         )
-    )
+    except KeyboardInterrupt:
+        # D14 (client→server coupling): Ctrl-C kills the run as everyone expects.
+        # By default that aborts the experiment server-side too, so a killed launch
+        # never leaves a silent orphan that auto-approves and sits idle. --resumable
+        # opts OUT (leave it running; resume with `experiment run <label>`).
+        if resumable:
+            click.echo(
+                f"\ninterrupted — {experiment_id} left running server-side; "
+                f"resume with `auspexai-tenant experiment run {label}`.",
+                err=True,
+            )
+            sys.exit(130)
+        click.echo(f"\ninterrupted — aborting {experiment_id} …", err=True)
+        try:
+            exp.abort()
+            click.echo(f"aborted {experiment_id}.", err=True)
+        except LifecycleConflictError:
+            click.echo(f"{experiment_id} was already terminal.", err=True)
+        except (CoordinatorError, httpx.RequestError) as e:
+            click.echo(
+                f"WARNING: couldn't abort {experiment_id} ({e}); abort it from the dashboard.",
+                err=True,
+            )
+        sys.exit(130)
     click.echo(f"outcome:  {result.outcome}")
     click.echo(f"rounds:   {result.rounds}")
     if result.outcome == "time_capped":
@@ -1106,6 +1138,12 @@ def _wait_for_approval(client, experiment_id: str, poll_interval: float) -> str:
     help="Wall-clock cap (e.g. 4h, 90m, 1h30m, HH:MM:SS); the run stops + finalizes "
     "at the cap, like max_rounds.",
 )
+@click.option(
+    "--resumable",
+    is_flag=True,
+    help="On Ctrl-C, leave the experiment running server-side (resume later with "
+    "`experiment run latest`). Default: Ctrl-C aborts the run cleanly.",
+)
 @_coord_opt
 @_key_opt
 @click.pass_context
@@ -1122,6 +1160,7 @@ def experiment_launch(
     duration_cap: str | None,
     coordinator: str,
     key_path: Path,
+    resumable: bool,
 ) -> None:
     """Build + submit + drive in ONE command — the whole experiment lifecycle.
 
@@ -1131,7 +1170,9 @@ def experiment_launch(
     `--config`), and the signing key comes from [experiment].key_path when --key
     is unset (so no repeated --key). After submit, a maintainer approves the
     experiment in the operator console; driving begins immediately and proceeds
-    automatically on approval (Ctrl-C is safe — re-run to resume from the journal).
+    automatically on approval (Ctrl-C aborts the run cleanly — including the
+    server-side experiment; pass --resumable to instead leave it running and
+    resume later with `experiment run latest`).
     PKG_DIR defaults to the `pkg/` next to experiment.toml — so plain `launch`
     works from anywhere in the repo."""
     from auspexai_tenant.experiment_config import load_experiment_config
@@ -1194,6 +1235,7 @@ def experiment_launch(
         profile=profile,
         doorbell=True,
         duration_cap=duration_cap,
+        resumable=resumable,
         coordinator=coordinator,
         key_path=key_path,
     )

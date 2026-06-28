@@ -251,6 +251,15 @@ def run_until(
                 stalled_since = monotonic()
             else:
                 stalled_polls += 1
+                prog = _safe_progress(experiment)
+                # D14 (server→client coupling): the experiment reached a terminal
+                # state out-of-band — a UI/ops abort, or an auto-complete. Stop
+                # cleanly instead of polling a dead run forever (the WaitForever
+                # default would otherwise spin until the process is killed).
+                if prog is not None and prog.is_terminal:
+                    outcome = f"externally_{prog.status}"
+                    round_complete = False
+                    break
                 action = stall(
                     StallContext(
                         round=round_,
@@ -259,7 +268,7 @@ def run_until(
                         pending=len(pending),
                         stalled_polls=stalled_polls,
                         stalled_seconds=monotonic() - stalled_since,
-                        progress=_safe_progress(experiment),
+                        progress=prog,
                     )
                 )
                 if action is StallAction.ABORT:
@@ -272,7 +281,7 @@ def run_until(
                     break
             wake.wait()
 
-        if outcome in ("aborted", "finalized_partial"):
+        if outcome in ("aborted", "finalized_partial") or outcome.startswith("externally_"):
             break
 
         # round complete (or converged mid-round) → journal the boundary checkpoint
@@ -353,6 +362,13 @@ def _terminate(
     experiment: Experiment,
     fetch_attestation: bool,
 ) -> RunResult:
+    if outcome.startswith("externally_"):
+        # The experiment reached a terminal state out-of-band (a UI/ops abort, or
+        # an auto-complete) while we were driving (D14). Don't re-finalize/abort
+        # the server side; record_aborted so a re-run won't try to resume a run
+        # that is already terminal.
+        jrnl.record_aborted()
+        return RunResult(outcome, completed_rounds, reduce.finalize(), None)
     if outcome == "aborted":
         _safe_action(experiment.abort)
         jrnl.record_aborted()

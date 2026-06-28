@@ -425,6 +425,44 @@ def test_finalize_on_partial_policy_thresholds() -> None:
     assert policy(StallContext(0, 4, 1, 3, 5, 0.0, None)).value == "wait"  # only 25% agreed
 
 
+def test_external_terminal_stops_the_driver(tmp_path) -> None:
+    """D14 (server→client coupling): when the experiment is aborted/completed
+    out-of-band, a stalled driver detects the terminal status and exits cleanly
+    instead of polling a dead run forever (WaitForever)."""
+    from auspexai_tenant.experiment import Progress
+
+    class AbortedMidRun(FakeExperiment):
+        def __init__(self) -> None:
+            super().__init__(blocked_prefixes=("r0",))  # units never fold → the driver stalls
+
+        def progress(self):
+            # A UI/ops abort flipped the server-side status to terminal.
+            return Progress(
+                status="aborted",
+                reduce_ready=False,
+                submissions_finalized=False,
+                total_work_units=2,
+                work_unit_counts={},
+                completions_total=0,
+                replication_target_total=None,
+                active_contributor_count=None,
+                network_active_workers=None,
+            )
+
+    exp = AbortedMidRun()
+    result = run_until(
+        exp,
+        condition=lambda a: a.total >= 100,  # never converges on its own
+        next_batch=_batch_of(2),
+        reduce=Counter(),
+        journal=tmp_path / "j",
+        wake=_wake(),
+        stall=WaitForever(),  # without the fix this would loop forever
+    )
+    assert result.outcome == "externally_aborted"
+    assert not exp.finalized  # never finalized an already-terminal experiment
+
+
 def test_abort_after_policy_threshold() -> None:
     policy = AbortAfter(seconds=10)
     assert policy(StallContext(0, 1, 0, 1, 1, 9.0, None)).value == "wait"
