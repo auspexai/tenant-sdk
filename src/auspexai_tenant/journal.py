@@ -53,6 +53,12 @@ class RunJournal:
 
     def append(self, record: Mapping[str, Any]) -> None:
         line = json.dumps(dict(record), separators=(",", ":"), sort_keys=True)
+        # The journal owns its file: ensure the parent dir exists before the first
+        # write. The default path is `runs/<label>/run.journal` (the shared per-run
+        # layout) whose dir nothing else creates on the launch path — without this,
+        # the very first record_submit (written before the POST) crashes the driver
+        # with FileNotFoundError and no units ever reach the coordinator.
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
             f.flush()

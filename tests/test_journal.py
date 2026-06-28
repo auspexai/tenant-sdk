@@ -27,6 +27,18 @@ def test_records_empty_when_no_file(tmp_path) -> None:
     assert j.exists() is False
 
 
+def test_append_creates_missing_parent_dir(tmp_path) -> None:
+    """The journal owns its file: append must create the runs/<label>/ dir when
+    nothing else has (regression — the launch path left it uncreated, so the
+    first record_submit crashed the driver with FileNotFoundError before any
+    units reached the coordinator)."""
+    path = tmp_path / "runs" / "vigiles-d6-drift-x" / "run.journal"
+    assert not path.parent.exists()
+    RunJournal(path).record_submit(0, [{"unit_id": "u1", "payload": {"x": 1}}])
+    assert path.exists()
+    assert [r["kind"] for r in RunJournal(path).records()] == ["submit"]
+
+
 def test_persists_across_instances(tmp_path) -> None:
     path = tmp_path / "run.journal"
     RunJournal(path).record_finalized()
