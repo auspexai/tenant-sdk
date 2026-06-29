@@ -2,19 +2,21 @@
 
 When you take custody of an experiment's evidence bundle it carries far more than result values: each result is wrapped in context that tells you *how much to trust it* and *how to combine it*. This guide turns that context into analysis. (If a decision ever goes against you, see your recourse in [`TENANT_TERMS.md` §8](https://github.com/auspexai/.github/blob/main/TENANT_TERMS.md).)
 
+> **This guide is about trust** — *can I trust this number?* For **what each column means and how to analyze it** (the data dictionary, the role discipline, the analysis recipes, the tools), see its companion: [`analyzing_your_results.md`](analyzing_your_results.md). Read both.
+
 ## The one rule: verify, *then* analyze
 
 Never analyze raw bundle data. Run verification first — it is the line between "numbers someone sent me" and "numbers I can defend":
 
 ```bash
 # download the evidence bundle AND verify the whole chain
-auspexai experiment export <exp-id> --verify -o evidence.json
+auspexai-tenant experiment export <exp-id> --verify -o evidence.json
 
 # confirm the attestation is anchored in the public transparency log (Rekor)
-auspexai experiment attestation <exp-id> --check-rekor
+auspexai-tenant experiment attestation <exp-id> --check-rekor
 
 # or re-verify a saved bundle offline, any time
-auspexai bundle verify evidence.json
+auspexai-tenant bundle verify evidence.json
 ```
 
 or in code — the one call that gates everything:
