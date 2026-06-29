@@ -292,13 +292,22 @@ def manifest_dict_from_config(
             k: out[k] for k in ("measurement_level", "shape", "dtype") if out.get(k) is not None
         }
 
-    # schema_version bumps to 0.2 exactly when a v0_2 member is present, so an
-    # existing config (none declared) stays a valid 0.1 manifest unchanged.
+    # ── v0_3 / D16.1: the self-describing feature schema ─────────────────────
+    # The toml [feature_schema."<path>"] tables map straight onto the manifest
+    # member (the toml structure mirrors FeatureDeclaration); Manifest.model_validate
+    # (run by the caller) does the per-kind §7 validation.
+    fs = cfg.raw.get("feature_schema")
+    if fs:
+        manifest["feature_schema"] = fs
+
+    # schema_version bumps to the lowest version that covers the declared members,
+    # so an existing config (none declared) stays a valid 0.1 manifest unchanged.
+    uses_v0_3 = "feature_schema" in manifest
     uses_v0_2 = (
         "expected_gguf_sha256" in model
         or "requires_real_execution" in manifest
         or "inference_determinism" in manifest
         or "output_schema" in manifest
     )
-    manifest["schema_version"] = "0.2" if uses_v0_2 else "0.1"
+    manifest["schema_version"] = "0.3" if uses_v0_3 else ("0.2" if uses_v0_2 else "0.1")
     return manifest

@@ -185,20 +185,158 @@ that the class is within the tenant's approved application classes, then decides
 auto-approve vs human review by class x tenant tier."""
 
 
-class Manifest(BaseModel):
-    """AuspexAI tenant manifest, v0.1 / v0.2.
+# ── D16.1: the self-describing feature schema (v0.3) ─────────────────────────
+# Every executor-emitted feature DECLARES what it means, its type + bounds, what a
+# change implies, and how replicas are compared for consensus. One declaration,
+# several readers (feature_schema_design.md §6): the coordinator enforces the
+# type/bounds at result ingest (a §7 structural guarantee — there is no free-text
+# kind), the C7 reducer reads `comparison` (the tolerance envelope IS this
+# declaration), and load_verified surfaces meaning/unit/range/role so a column
+# arrives self-documented. The schema lives in the SIGNED manifest, so the
+# documentation is content-addressed, attested, and fixed before any data exists.
 
-    Mirrors schemas/manifest_v0_1.json + schemas/manifest_v0_2.json (v0.2 is a
-    superset: four optional members M1-M4, enforcement keyed on presence). See
+FeatureKind = Literal["hash", "count", "numeric", "categorical", "ordinal", "set"]
+"""The §7-safe measurement type. There is DELIBERATELY no `text`/free-string kind:
+a string feature must be a `categorical` with a CLOSED `categories` set, or a
+`hash` — that is the no-raw-text guarantee made structural, not conventional."""
+
+FeatureRole = Literal["anchor", "summary", "provenance", "key", "diagnostic"]
+"""Feature AUTHORITY. anchor = the authoritative drift/consensus signal (e.g.
+response_sha256); summary = a coarse, possibly lossy aggregate (never the sole
+drift truth); provenance = what produced the row (stratify by it); key = a
+join/comparison coordinate (feeds D16.2 comparison_keys / D16.4 drift joins);
+diagnostic = operational, not a research measure."""
+
+SetElementKind = Literal["categorical", "numeric", "count", "hash"]
+
+
+class FeatureRange(BaseModel):
+    """Closed/half-open numeric bound for `numeric`/`count` features. `max` omitted
+    ⇒ unbounded above (a count). Read at result ingest to reject out-of-range
+    values (§7) and by load_verified for the data dictionary."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    min: float
+    max: float | None = None
+
+    @model_validator(mode="after")
+    def _ordered(self) -> FeatureRange:
+        if self.max is not None and self.max < self.min:
+            raise ValueError(f"range max ({self.max}) < min ({self.min})")
+        return self
+
+
+class ValidWhen(BaseModel):
+    """A STRUCTURED validity predicate (never free-text/eval — the M4 lesson, so it
+    is a *reader* not dead text): the feature is interpretable only when
+    `<field> <op> <value>` holds. load_verified evaluates it → a `<col>.valid`
+    column / warning (e.g. type_token_ratio is degenerate when tokens < 5)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    field: str
+    op: Literal[">=", "<=", ">", "<", "==", "!="]
+    value: float | int | str
+
+
+class FeatureComparison(BaseModel):
+    """How replicas/rounds must AGREE on this feature — the C7 tolerance envelope,
+    declared once here and read by the within_cell_tolerance reducer (C7 Inc 1).
+    Rule types mirror tolerance_consensus_design.md §3.1."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rule: Literal["exact", "numeric", "set_jaccard", "categorical_exact"]
+    rel: float | None = None  # numeric: relative tolerance
+    abs: float | None = None  # numeric: absolute tolerance
+    min: float | None = None  # set_jaccard: minimum similarity
+
+    @model_validator(mode="after")
+    def _rule_fields(self) -> FeatureComparison:
+        if self.rule == "numeric" and self.rel is None and self.abs is None:
+            raise ValueError("comparison rule 'numeric' needs 'rel' or 'abs'")
+        if self.rule == "set_jaccard":
+            if self.min is None or not (0.0 <= self.min <= 1.0):
+                raise ValueError("comparison rule 'set_jaccard' needs 'min' in [0,1]")
+        if self.rule in ("exact", "categorical_exact") and (
+            self.rel is not None or self.abs is not None or self.min is not None
+        ):
+            raise ValueError(f"comparison rule '{self.rule}' takes no rel/abs/min")
+        return self
+
+
+class FeatureDeclaration(BaseModel):
+    """A self-describing declaration for one executor-emitted feature (D16.1).
+    Keyed in `Manifest.feature_schema` by the dotted result-payload path the
+    executor emits (e.g. "lexical.type_token_ratio"); load_verified prefixes the
+    column with "output.". `kind` is load-bearing — it fixes both the §7 ingest
+    validation and the default comparison rule."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # core (required)
+    meaning: Annotated[str, Field(min_length=1)]
+    kind: FeatureKind
+    role: FeatureRole
+    change_means: Annotated[str, Field(min_length=1)]
+    # §7-safe bounds (required FOR THE KIND — see the validator)
+    unit: str | None = None
+    range: FeatureRange | None = None
+    categories: list[str] | None = None  # required+non-empty for categorical/ordinal (validator)
+    algorithm: str | None = None  # hash, e.g. "sha256"
+    element_kind: SetElementKind | None = None  # set
+    max_cardinality: Annotated[int | None, Field(ge=1)] = None  # set
+    # interpretability (optional)
+    invariant_to: list[str] = Field(default_factory=list)
+    valid_when: ValidWhen | None = None
+    # consensus (optional; defaults per kind in C7)
+    comparison: FeatureComparison | None = None
+
+    @model_validator(mode="after")
+    def _kind_bounds(self) -> FeatureDeclaration:
+        k = self.kind
+        # Each kind requires its own §7 bounds...
+        if k == "numeric" and self.range is None:
+            raise ValueError("kind 'numeric' requires a 'range' (a bounded measure)")
+        if k in ("categorical", "ordinal") and not self.categories:
+            raise ValueError(
+                f"kind '{k}' requires a non-empty 'categories' "
+                "(a CLOSED set — the §7 no-free-text guarantee)"
+            )
+        if k == "hash" and not self.algorithm:
+            raise ValueError("kind 'hash' requires an 'algorithm' (e.g. 'sha256')")
+        if k == "set" and (self.element_kind is None or self.max_cardinality is None):
+            raise ValueError("kind 'set' requires 'element_kind' and 'max_cardinality'")
+        # ...and rejects bounds that do not belong to it (no nonsense declarations).
+        if self.range is not None and k not in ("numeric", "count"):
+            raise ValueError(f"'range' is only valid for numeric/count, not '{k}'")
+        if self.categories is not None and k not in ("categorical", "ordinal", "set"):
+            raise ValueError(f"'categories' is only valid for categorical/ordinal/set, not '{k}'")
+        if self.algorithm is not None and k != "hash":
+            raise ValueError(f"'algorithm' is only valid for hash, not '{k}'")
+        if (self.element_kind is not None or self.max_cardinality is not None) and k != "set":
+            raise ValueError(f"'element_kind'/'max_cardinality' are only valid for set, not '{k}'")
+        return self
+
+
+class Manifest(BaseModel):
+    """AuspexAI tenant manifest, v0.1 / v0.2 / v0.3.
+
+    Mirrors schemas/manifest_v0_1.json + v0_2.json + v0_3.json. Each version is a
+    superset of the prior, enforcement keyed on PRESENCE: v0.2 adds four optional
+    members (M1-M4); v0.3 adds the optional `feature_schema` (D16.1). Older
+    versions stay valid forever (re-verify-forever, no forced migration). See
     sdk_license_boundary_position.md §6.2 for the published-contract framing.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    # v0_2 accepts both: "0.1" stays valid forever (re-verify-forever; no forced
-    # migration). The v0_2 members are all OPTIONAL even under 0.2 — enforcement
-    # keys on PRESENCE, so a manifest declaring none is valid v0.2 unchanged.
-    schema_version: Literal["0.1", "0.2"]
+    # Each version stays valid forever (re-verify-forever; no forced migration).
+    # Every superset member is OPTIONAL — enforcement keys on PRESENCE, so a
+    # manifest declaring none of a version's members is structurally the prior
+    # version with schema_version bumped.
+    schema_version: Literal["0.1", "0.2", "0.3"]
     tenant_id: Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]{2,63}$")]
     tenant_maintainer_contact: EmailStr
     experiment_id: Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]{2,127}$")]
@@ -226,6 +364,11 @@ class Manifest(BaseModel):
     inference_determinism: InferenceDeterminism | None = None
     # M4 — the declared measurement type of a unit's result.
     output_schema: OutputSchema | None = None
+    # v0_3 / D16.1 — the self-describing feature schema, keyed by the dotted
+    # result-payload path the executor emits. Optional (enforcement keys on
+    # presence); required for certified/citable experiments, optional for BYOT
+    # (the coordinator gate, Inc 2). See feature_schema_design.md.
+    feature_schema: dict[str, FeatureDeclaration] | None = None
 
     @model_validator(mode="after")
     def _sensitive_requires_attestation(self) -> Manifest:
