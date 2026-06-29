@@ -58,6 +58,7 @@ from auspexai_tenant.journal import ResumeState, RunJournal, resume_state
 from auspexai_tenant.manifest import (
     ApproverAttestation,
     BuiltinReducer,
+    BuiltinToleranceReducer,
     CustomReducer,
     Executor,
     HttpWorkUnitSource,
@@ -120,6 +121,7 @@ __all__ = [
     "AttestationVerification",
     "Backoff",
     "BuiltinReducer",
+    "BuiltinToleranceReducer",
     "CoordinatorError",
     "Counter",
     "CustomReducer",

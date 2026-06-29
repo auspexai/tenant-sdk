@@ -133,10 +133,15 @@ executor = {
   ? package_sha256: tstr,
 }
 
-reducer = builtin_reducer / custom_reducer
+reducer = builtin_reducer / tolerance_reducer / custom_reducer
 
 builtin_reducer = {
   kind: "builtin_hash_agreement",
+}
+
+tolerance_reducer = {
+  kind: "builtin_within_cell_tolerance",
+  ? tolerance_features: [+ tstr],
 }
 
 custom_reducer = {

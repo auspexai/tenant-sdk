@@ -141,14 +141,42 @@ class Executor(BaseModel):
 
 
 class BuiltinReducer(BaseModel):
-    """Built-in SHA-256 hash-agreement reducer.
+    """Built-in SHA-256 hash-agreement reducer (`within_cell_exact`).
 
     Suitable for deterministic outputs (most hash-agreement result shapes fit).
+    Requires byte-exact cross-worker reproducibility — opt-in only on a pinned
+    "deterministic cell" (serving_version_pin + temp0/seed). On a heterogeneous
+    BYO fleet prefer BuiltinToleranceReducer (C7), which version skew does not break.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     kind: Literal["builtin_hash_agreement"]
+
+
+class BuiltinToleranceReducer(BaseModel):
+    """C7 `within_cell_tolerance` — the default corroboration model for inference /
+    LLM experiments on a heterogeneous fleet.
+
+    Replicas AGREE when their declared features fall within each feature's
+    `comparison` envelope (read from `feature_schema`, NOT re-declared here — the
+    feature_schema_design.md §5 reconciliation) for at least `replication_floor`
+    workers; a divergent worker is an OUTLIER (recorded in the divergence index),
+    not a consensus-blocker. That is the C15 fix: under exact@N one skewed worker
+    blocks the unit; under tolerance@floor it is one outlier among the agreeing
+    floor. The kind starts with 'builtin' so it clears the certification machine
+    gate; it emits the `within_cell_tolerance` integrity basis. See
+    tolerance_consensus_design.md (RATIFIED 2026-06-29).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["builtin_within_cell_tolerance"]
+    # Optional subset of feature_schema paths whose `comparison` forms the
+    # agreement predicate. Omit ⇒ every feature that declares a non-`exact`
+    # `comparison` (the anchor's `exact` rule strengthens the basis but never
+    # blocks — §9 Q3). The coordinator validates each path is a declared feature.
+    tolerance_features: Annotated[list[str], Field(min_length=1)] | None = None
 
 
 class CustomReducer(BaseModel):
@@ -165,7 +193,7 @@ class CustomReducer(BaseModel):
 
 
 Reducer = Annotated[
-    BuiltinReducer | CustomReducer,
+    BuiltinReducer | BuiltinToleranceReducer | CustomReducer,
     Field(discriminator="kind"),
 ]
 

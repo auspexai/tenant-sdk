@@ -268,7 +268,16 @@ def manifest_dict_from_config(
             "command": list(req(executor, "command", "executor")),
             "package_sha256": package_sha256,
         },
-        "reducer": {"kind": req(reducer, "kind", "reducer")},
+        "reducer": {
+            "kind": req(reducer, "kind", "reducer"),
+            # C7: a within_cell_tolerance reducer may name the predicate feature
+            # subset; passed through when declared (omit ⇒ all comparison'd features).
+            **(
+                {"tolerance_features": list(reducer["tolerance_features"])}
+                if reducer.get("tolerance_features")
+                else {}
+            ),
+        },
     }
     # Approver attestations (required by the schema when sensitive flags are set)
     # ride an [approver] / [[approver_attestations]] table when present.

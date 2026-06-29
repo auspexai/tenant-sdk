@@ -87,6 +87,44 @@ def test_unknown_reducer_kind_rejected() -> None:
         Manifest.model_validate(raw)
 
 
+def test_tolerance_reducer_loads() -> None:
+    """C7 Inc 1: the within_cell_tolerance reducer is a valid builtin reducer,
+    with or without an explicit predicate-feature subset."""
+    from auspexai_tenant.manifest import BuiltinToleranceReducer
+
+    raw = json.loads((FIXTURES / "valid_minimal.json").read_text())
+    raw["reducer"] = {
+        "kind": "builtin_within_cell_tolerance",
+        "tolerance_features": ["lexical.type_token_ratio", "lexical.top_tokens"],
+    }
+    m = Manifest.model_validate(raw)
+    assert isinstance(m.reducer, BuiltinToleranceReducer)
+    assert m.reducer.tolerance_features == ["lexical.type_token_ratio", "lexical.top_tokens"]
+
+    raw["reducer"] = {"kind": "builtin_within_cell_tolerance"}  # subset omitted ⇒ all
+    m2 = Manifest.model_validate(raw)
+    assert isinstance(m2.reducer, BuiltinToleranceReducer)
+    assert m2.reducer.tolerance_features is None
+
+
+def test_tolerance_reducer_empty_subset_rejected() -> None:
+    raw = json.loads((FIXTURES / "valid_minimal.json").read_text())
+    raw["reducer"] = {"kind": "builtin_within_cell_tolerance", "tolerance_features": []}
+    with pytest.raises(ValidationError):
+        Manifest.model_validate(raw)
+
+
+def test_json_schema_accepts_tolerance_reducer() -> None:
+    """The v0.3 JSON-schema mirror stays in lockstep with the Pydantic model."""
+    raw = json.loads((FIXTURES / "valid_minimal.json").read_text())
+    raw["schema_version"] = "0.3"
+    raw["reducer"] = {
+        "kind": "builtin_within_cell_tolerance",
+        "tolerance_features": ["lexical.type_token_ratio"],
+    }
+    jsonschema.validate(raw, load_schema("manifest_v0_3.json"))
+
+
 def test_pydantic_roundtrip_preserves_data() -> None:
     raw = json.loads((FIXTURES / "valid_sensitive.json").read_text())
     m = Manifest.model_validate(raw)
