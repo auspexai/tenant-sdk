@@ -1675,6 +1675,29 @@ def bundle_verify(
     click.echo("verified ✓")
 
 
+def _emit_data_dictionary(data: dict) -> None:
+    """Print the bundle's declared feature_schema as a data dictionary (D16.1).
+    `data` is an already-VERIFIED bundle dict (the manifest is bound to the signed
+    hash), so this is the attested documentation for the output.* columns."""
+    from auspexai_tenant.evidence import data_dictionary_rows
+
+    fs = (data.get("manifest") or {}).get("feature_schema")
+    if not fs:
+        click.echo("(no feature_schema declared — pre-D16.1 bundle / not a v0.3 manifest)")
+        return
+    click.echo(f"Data dictionary — {len(fs)} declared feature(s), from the signed manifest:\n")
+    for r in data_dictionary_rows(fs):
+        tags = "/".join(t for t in (r["kind"], r["role"]) if t)
+        extra = " · ".join(t for t in (r["unit"], r["bounds"]) if t)
+        head = f"  {r['column']}  [{tags}]"
+        click.echo(head + (f"  ({extra})" if extra else ""))
+        if r["meaning"]:
+            click.echo(f"      {r['meaning']}")
+        if r["change_means"]:
+            click.echo(f"      Δ a change means: {r['change_means']}")
+    click.echo("")
+
+
 @bundle.command("table")
 @click.argument("bundle_file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option(
@@ -1682,23 +1705,60 @@ def bundle_verify(
     "--out",
     "out_path",
     type=click.Path(dir_okay=False, path_type=Path),
-    required=True,
-    help="Output table; format by extension: .csv or .parquet.",
+    default=None,
+    help="Output table; format by extension: .csv or .parquet. "
+    "Optional if --data-dictionary is given.",
+)
+@click.option(
+    "--data-dictionary",
+    "data_dictionary",
+    is_flag=True,
+    help="Print the declared, signed feature_schema (column · kind · role · unit · "
+    "bounds · meaning · what a change means) — the data dictionary for output.* columns (D16.1).",
 )
 @click.option(
     "--signer", "signers", multiple=True, help="Authorized signer pubkey hex (repeatable)."
 )
 @click.option("--check-rekor", is_flag=True, help="Also check Rekor inclusion online first.")
 def bundle_table(
-    bundle_file: Path, out_path: Path, signers: tuple[str, ...], check_rekor: bool
+    bundle_file: Path,
+    out_path: Path | None,
+    data_dictionary: bool,
+    signers: tuple[str, ...],
+    check_rekor: bool,
 ) -> None:
-    """VERIFY the bundle, then write its results as a flat table.
+    """VERIFY the bundle, then write its results as a flat table and/or print its
+    data dictionary.
 
     One row per consensus result; work-unit inputs flatten to input.* columns
     and result payloads to output.* — ready for pandas, Excel, Tableau, or R.
-    Refuses to write anything from a bundle that fails verification.
-    Needs the analysis extra: pip install 'auspexai-tenant[analysis]'."""
-    from auspexai_tenant.evidence import BundleVerificationError, load_verified
+    `--data-dictionary` prints the declared, signed feature_schema next to the
+    data (and works without the analysis extra). Refuses anything from a bundle
+    that fails verification (incl. the D16.1 manifest binding). The table needs
+    the analysis extra: pip install 'auspexai-tenant[analysis]'."""
+    from auspexai_tenant.evidence import (
+        BundleVerificationError,
+        _read_bundle,
+        load_verified,
+        verify_bundle,
+    )
+
+    if out_path is None and not data_dictionary:
+        click.echo(
+            "ERROR: pass --out to write the table and/or --data-dictionary to print the schema",
+            err=True,
+        )
+        sys.exit(1)
+
+    # Data-dictionary-only: verify (no pandas needed) + print the signed schema.
+    if data_dictionary and out_path is None:
+        data = _read_bundle(bundle_file)
+        v = verify_bundle(data, authorized_signers=list(signers) or None, check_rekor=check_rekor)
+        if not v.ok:
+            click.echo(f"REFUSED: {BundleVerificationError(v)}", err=True)
+            sys.exit(1)
+        _emit_data_dictionary(data)
+        return
 
     try:
         df = load_verified(
@@ -1709,6 +1769,8 @@ def bundle_table(
     except BundleVerificationError as e:
         click.echo(f"REFUSED: {e}", err=True)
         sys.exit(1)
+    if data_dictionary:
+        _emit_data_dictionary(_read_bundle(bundle_file))
     # Residual non-scalar cells (lists, e.g. lexical.top_tokens) JSON-encode so
     # the table is typed-column clean for Parquet and round-trips through CSV.
     for col in df.columns:

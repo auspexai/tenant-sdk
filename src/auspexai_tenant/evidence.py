@@ -29,7 +29,9 @@ receipt + semantic_hash still prove the unit ran.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import operator as _operator
 from base64 import b64decode
 from dataclasses import dataclass
 from typing import Any
@@ -108,6 +110,13 @@ class BundleVerification:
     # the attestation carries no footprint (pre-firewall); False = the asserted
     # counts diverge from the signed unit list (tamper or coordinator bug).
     footprint_ok: bool | None = None
+    # D16.1: the embedded manifest body recomputes to the SIGNED manifest_hash
+    # (the hash the transfer record covers). None when the bundle carries no
+    # manifest or no manifest_hash (pre-D16.1 / older coordinators); False = the
+    # embedded manifest was swapped (so its feature_schema / models / etc. are
+    # NOT the attested ones). Lets load_verified surface the feature_schema as the
+    # bound, signed data dictionary rather than an out-of-band copy.
+    manifest_bound_ok: bool | None = None
     # The coordinator-asserted governance footprint, surfaced for the researcher
     # to correct for apparatus influence (None on pre-firewall attestations).
     governance_footprint: dict[str, Any] | None = None
@@ -142,6 +151,7 @@ class BundleVerification:
             and self.completeness_ok is not False
             and self.inputs_bound_ok is not False
             and self.footprint_ok is not False
+            and self.manifest_bound_ok is not False
             and self.worker_signatures.ok
         )
 
@@ -248,6 +258,15 @@ def verify_worker_signatures(
         skipped_missing_fields=skipped_missing,
         strict=strict,
     )
+
+
+def _canonical_manifest_hash(manifest: dict[str, Any]) -> str:
+    """The content-address of a manifest dict. MIRRORS the coordinator's
+    ManifestRepository.hash_manifest (canonical JSON: sorted keys, compact
+    separators, UTF-8, sha256) — the hash carried in the signed transfer record.
+    Kept in lockstep so an embedded manifest can be bound to that signed hash."""
+    canonical = json.dumps(manifest, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def verify_bundle(
@@ -366,6 +385,16 @@ def verify_bundle(
     # there, so a missing field is a strip-tamper, not an old coordinator).
     ws = verify_worker_signatures(consensus, strict=schema is not None)
 
+    # 7. D16.1: bind the embedded manifest to the SIGNED manifest_hash (covered
+    # by the transfer signature). None when either is absent (pre-D16.1 bundle /
+    # old coordinator); False = the manifest body was swapped — so its
+    # feature_schema is NOT the attested one and load_verified must not trust it.
+    manifest_bound: bool | None = None
+    embedded_manifest = bundle.get("manifest")
+    signed_manifest_hash = t.get("manifest_hash")
+    if embedded_manifest is not None and signed_manifest_hash:
+        manifest_bound = _canonical_manifest_hash(embedded_manifest) == signed_manifest_hash
+
     return BundleVerification(
         transfer_signature_valid=transfer_sig_ok,
         transfer_signer_authorized=signer_authorized,
@@ -374,6 +403,7 @@ def verify_bundle(
         completeness_ok=completeness,
         inputs_bound_ok=inputs_bound,
         footprint_ok=footprint_ok,
+        manifest_bound_ok=manifest_bound,
         governance_footprint=governance_footprint,
         worker_signatures=ws,
         signer_pin_mode=signer_pin_mode,
@@ -404,6 +434,8 @@ class BundleVerificationError(Exception):
             failed.append("delivered set != attested set")
         if v.inputs_bound_ok is False:
             failed.append("input binding (work-unit payload hashes)")
+        if v.manifest_bound_ok is False:
+            failed.append("manifest binding (embedded manifest != signed manifest_hash)")
         if v.worker_signatures.failed:
             failed.append(f"worker signatures ({', '.join(v.worker_signatures.failed)})")
         if not v.worker_signatures.ok and not v.worker_signatures.failed:
@@ -522,4 +554,86 @@ def load_verified(
     # The apparatus footprint travels with the verified frame (firewall #2,
     # researcher-facing): df.attrs["governance_footprint"].
     df.attrs["governance_footprint"] = verification.governance_footprint
+
+    # D16.1 Inc 3: surface the declared feature schema as the frame's data
+    # dictionary. Read from the bundle's manifest — which verify_bundle just bound
+    # to the SIGNED manifest_hash (manifest_bound_ok), so this is the attested
+    # documentation, not an out-of-band copy. Keyed by the output.-prefixed column
+    # so `df.attrs["feature_schema"]["output.lexical.type_token_ratio"]` lines up
+    # with the column. Under §7 the declared set IS the whole interpretability
+    # surface (raw outputs are never retained), so a self-documented frame matters.
+    feature_schema = (data.get("manifest") or {}).get("feature_schema")
+    if feature_schema:
+        df.attrs["feature_schema"] = {
+            f"output.{path}": decl for path, decl in feature_schema.items()
+        }
+        if not df.empty:
+            _apply_valid_when(df, feature_schema)
     return df
+
+
+# D16.1 Inc 3 — the feature-schema researcher surface (load_verified + the
+# `bundle table --data-dictionary` CLI). KEEP IN LOCKSTEP with the manifest
+# FeatureDeclaration contract (manifest.py) + the coordinator mirror.
+
+_VALID_WHEN_OPS = {
+    ">=": _operator.ge,
+    "<=": _operator.le,
+    ">": _operator.gt,
+    "<": _operator.lt,
+    "==": _operator.eq,
+    "!=": _operator.ne,
+}
+
+
+def _apply_valid_when(df: Any, feature_schema: dict[str, Any]) -> None:
+    """For each feature declaring a structured `valid_when` {field, op, value},
+    add a boolean `output.<path>.valid` column = (output.<field> <op> value), so a
+    feature that is only interpretable under a precondition (e.g. type_token_ratio
+    is degenerate when tokens < 5) is FLAGGED in the frame, not discovered by
+    accident. Skipped silently when the referenced field column is absent."""
+    for path, decl in feature_schema.items():
+        vw = decl.get("valid_when") if isinstance(decl, dict) else None
+        if not isinstance(vw, dict):
+            continue
+        opfn = _VALID_WHEN_OPS.get(vw.get("op"))
+        field_col = f"output.{vw.get('field')}"
+        if opfn is None or "value" not in vw or field_col not in df.columns:
+            continue
+        df[f"output.{path}.valid"] = opfn(df[field_col], vw["value"])
+
+
+def data_dictionary_rows(feature_schema: dict[str, Any]) -> list[dict[str, str]]:
+    """Flatten a manifest feature_schema into printable data-dictionary rows
+    (column · kind · role · unit · range/categories · meaning · change_means) for
+    the `bundle table --data-dictionary` CLI. Pure; shared so the CLI and any
+    other consumer render the SAME dictionary."""
+    rows: list[dict[str, str]] = []
+    for path, d in feature_schema.items():
+        if not isinstance(d, dict):
+            continue
+        rng = d.get("range")
+        cats = d.get("categories")
+        if isinstance(rng, dict):
+            lo, hi = rng.get("min"), rng.get("max")
+            bounds = f"[{lo}, {hi if hi is not None else '∞'}]"
+        elif cats:
+            bounds = "{" + ", ".join(map(str, cats)) + "}"
+        elif d.get("algorithm"):
+            bounds = str(d["algorithm"])
+        elif d.get("kind") == "set":
+            bounds = f"≤{d.get('max_cardinality')} {d.get('element_kind')}"
+        else:
+            bounds = ""
+        rows.append(
+            {
+                "column": f"output.{path}",
+                "kind": str(d.get("kind", "")),
+                "role": str(d.get("role", "")),
+                "unit": str(d.get("unit") or ""),
+                "bounds": bounds,
+                "meaning": str(d.get("meaning", "")),
+                "change_means": str(d.get("change_means", "")),
+            }
+        )
+    return rows

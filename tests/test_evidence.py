@@ -25,7 +25,11 @@ from auspexai_tenant.attestation import (
     merkle_root,
     unit_payload_sha256,
 )
-from auspexai_tenant.evidence import verify_bundle, verify_worker_signatures
+from auspexai_tenant.evidence import (
+    _canonical_manifest_hash,
+    verify_bundle,
+    verify_worker_signatures,
+)
 
 _ALG, _KID, _EDDSA = 1, 4, -8
 
@@ -113,7 +117,12 @@ def _make_bundle(
     footprint: dict | None = None,
     diverged_units: list[dict] | None = None,
     served_weights: dict | None = None,
+    manifest: dict | None = None,
 ) -> dict:
+    manifest = manifest if manifest is not None else {"experiment_id": "exp-label"}
+    # D16.1: the embedded manifest must recompute to the signed manifest_hash
+    # (verify_bundle's manifest binding), so the fixture uses the real hash.
+    mh = _canonical_manifest_hash(manifest)
     work_units = [{"unit_id": f"u{i}", "payload": {"q": i}} for i in range(n)]
     consensus = []
     att_units = []
@@ -147,8 +156,8 @@ def _make_bundle(
     bundle: dict = {
         "schema": "auspexai-evidence-bundle/v1",
         "experiment_id": "exp-123",
-        "manifest_hash": "ab" * 32,
-        "manifest": {"experiment_id": "exp-label"},
+        "manifest_hash": mh,
+        "manifest": manifest,
         "work_units": work_units,
         "consensus_results": consensus,
         "receipts": [],
@@ -166,7 +175,7 @@ def _make_bundle(
         root_kind = "flat-v0"
     collected_by = "cd" * 32
     collected_at = "2026-06-11T12:00:00+00:00"
-    record = f"{root}|{collected_by}|{collected_at}|{'ab' * 32}".encode()
+    record = f"{root}|{collected_by}|{collected_at}|{mh}".encode()
     bundle["transfer"] = {
         "transfer_id": "xfer-test",
         "result_set_root": root,
@@ -174,7 +183,7 @@ def _make_bundle(
         "attestation_id": "att-eb1" if with_attestation else None,
         "collected_at": collected_at,
         "collected_by_pubkey": collected_by,
-        "manifest_hash": "ab" * 32,
+        "manifest_hash": mh,
         "receipt_count": 0,
         "coordinator_signature": coordinator_key.sign(record).hex(),
         "coordinator_pubkey_hex": _pub_hex(coordinator_key),
