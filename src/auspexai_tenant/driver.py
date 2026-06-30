@@ -144,6 +144,12 @@ class DriverSpec:
     reduce: RunningAggregate
     wake: WakeSource | None = None
     stall: StallPolicy | None = None
+    # Results view the loop folds: "consensus" (one agreed result per unit — the
+    # default) or "raw" (EVERY replica as a valid observation; the round then
+    # completes on the coordinator's all-units-terminal signal, NOT a replica
+    # target — the drift observe-all model where a divergent/silent worker is one
+    # fewer corroborator, never a consensus-blocker).
+    include: str = "consensus"
     max_rounds: int = 50
     # Wall-clock budget (seconds). When the loop next checks (after the condition
     # and max_rounds gates) the cap is reached, the run finalizes at its current
@@ -200,7 +206,11 @@ def run_until(
         return RunResult("already_finalized", state.current_round, reduce.finalize(), att)
 
     cursor = state.cursor
-    folded: set[str] = set(state.folded_units)
+    # Consensus: dedup folds by unit_id, restored from the journal (completed rounds'
+    # units). Raw: dedup by result_id within the session — a fresh set is correct
+    # because re-folding a result on resume only re-increments a bucket count, which
+    # the distinct-bucket convergence ignores (double-fold is harmless in observe-all).
+    folded: set[str] = set() if include == "raw" else set(state.folded_units)
     pinned = state.pinned_units
     round_ = state.current_round
     completed_rounds = round_
@@ -234,52 +244,108 @@ def run_until(
         _submit_idempotent(experiment, units, round_)
 
         # --- poll-fold this round until complete / converged / stalled ---
-        pending = {u.unit_id for u in units} - folded
         stalled_polls = 0
         stalled_since = monotonic()
         round_complete = True
-        while pending:
-            progressed, cursor = _drain(experiment, reduce, cursor, pending, folded, include)
-            if not pending:
-                break  # round complete — every unit folded (the normal path)
-            if condition(reduce):
-                round_complete = False  # early convergence, before the round finished
-                break
-            if progressed:
-                wake.progress()
-                stalled_polls = 0
-                stalled_since = monotonic()
-            else:
-                stalled_polls += 1
+        if include == "raw":
+            # Observe-all / wait-for-TERMINAL: fold EVERY replica (dedup by
+            # result_id) and complete the round when the COORDINATOR marks all units
+            # terminal (work_unit_counts: no pending/in_progress), NOT a driver
+            # replica target — the coordinator owns silent-worker handling (C14:
+            # reassign / settle-at-floor / pause-below-floor). A divergent or
+            # empty-output worker is a recorded observation, never a blocker. No
+            # mid-round `condition` call: observed-set convergence is judged once per
+            # round at the top of the outer loop.
+            while True:
+                progressed, cursor = _drain(
+                    experiment, reduce, cursor, None, folded, include, by_result=True
+                )
                 prog = _safe_progress(experiment)
-                # D14 (server→client coupling): the experiment reached a terminal
-                # state out-of-band — a UI/ops abort, or an auto-complete. Stop
-                # cleanly instead of polling a dead run forever (the WaitForever
-                # default would otherwise spin until the process is killed).
                 if prog is not None and prog.is_terminal:
                     outcome = f"externally_{prog.status}"
                     round_complete = False
                     break
-                action = stall(
-                    StallContext(
-                        round=round_,
-                        submitted=len(units),
-                        agreed=len(units) - len(pending),
-                        pending=len(pending),
-                        stalled_polls=stalled_polls,
-                        stalled_seconds=monotonic() - stalled_since,
-                        progress=prog,
+                if _all_units_terminal(prog):
+                    # every unit settled (completed / floor / diverged) — flush any
+                    # straggler results to the cursor end, then the round is done.
+                    while True:
+                        more, cursor = _drain(
+                            experiment, reduce, cursor, None, folded, include, by_result=True
+                        )
+                        if not more:
+                            break
+                    break
+                if progressed:
+                    wake.progress()
+                    stalled_polls = 0
+                    stalled_since = monotonic()
+                else:
+                    stalled_polls += 1
+                    pending_n = _nonterminal_count(prog) or 0
+                    action = stall(
+                        StallContext(
+                            round=round_,
+                            submitted=len(units),
+                            agreed=len(units) - pending_n,
+                            pending=pending_n,
+                            stalled_polls=stalled_polls,
+                            stalled_seconds=monotonic() - stalled_since,
+                            progress=prog,
+                        )
                     )
-                )
-                if action is StallAction.ABORT:
-                    outcome = "aborted"
-                    round_complete = False
+                    if action is StallAction.ABORT:
+                        outcome = "aborted"
+                        round_complete = False
+                        break
+                    if action is StallAction.FINALIZE_PARTIAL:
+                        outcome = "finalized_partial"
+                        round_complete = False
+                        break
+                wake.wait()
+        else:
+            pending = {u.unit_id for u in units} - folded
+            while pending:
+                progressed, cursor = _drain(experiment, reduce, cursor, pending, folded, include)
+                if not pending:
+                    break  # round complete — every unit folded (the normal path)
+                if condition(reduce):
+                    round_complete = False  # early convergence, before the round finished
                     break
-                if action is StallAction.FINALIZE_PARTIAL:
-                    outcome = "finalized_partial"
-                    round_complete = False
-                    break
-            wake.wait()
+                if progressed:
+                    wake.progress()
+                    stalled_polls = 0
+                    stalled_since = monotonic()
+                else:
+                    stalled_polls += 1
+                    prog = _safe_progress(experiment)
+                    # D14 (server→client coupling): the experiment reached a terminal
+                    # state out-of-band — a UI/ops abort, or an auto-complete. Stop
+                    # cleanly instead of polling a dead run forever (the WaitForever
+                    # default would otherwise spin until the process is killed).
+                    if prog is not None and prog.is_terminal:
+                        outcome = f"externally_{prog.status}"
+                        round_complete = False
+                        break
+                    action = stall(
+                        StallContext(
+                            round=round_,
+                            submitted=len(units),
+                            agreed=len(units) - len(pending),
+                            pending=len(pending),
+                            stalled_polls=stalled_polls,
+                            stalled_seconds=monotonic() - stalled_since,
+                            progress=prog,
+                        )
+                    )
+                    if action is StallAction.ABORT:
+                        outcome = "aborted"
+                        round_complete = False
+                        break
+                    if action is StallAction.FINALIZE_PARTIAL:
+                        outcome = "finalized_partial"
+                        round_complete = False
+                        break
+                wake.wait()
 
         if outcome in ("aborted", "finalized_partial") or outcome.startswith("externally_"):
             break
@@ -312,27 +378,55 @@ def _drain(
     experiment: Experiment,
     reduce: RunningAggregate,
     cursor: str | None,
-    pending: set[str],
+    pending: set[str] | None,
     folded: set[str],
     include: str,
+    *,
+    by_result: bool = False,
 ) -> tuple[bool, str | None]:
-    """Fold every not-yet-folded consensus result currently available, advancing
-    the cursor through full pages. Dedupes by unit_id (the correctness guarantee);
-    returns (progressed, cursor) where `progressed` is True iff a *new* unit folded."""
+    """Fold every not-yet-folded result currently available, advancing the cursor
+    through full pages. Dedupes by `result_id` when `by_result` (the raw observe-all
+    path — every replica is a distinct observation) or by `unit_id` (consensus, one
+    result per unit), and discards a folded unit from `pending` (consensus only;
+    `pending` is None on the raw path, whose round-completion is coordinator-driven).
+    Returns (progressed, cursor) where `progressed` is True iff a *new* result folded."""
     progressed = False
     while True:
         page = experiment.results_page(cursor=cursor, include=include)
         for result in page.results:
-            unit_id = result.get("unit_id")
-            if unit_id in folded:
+            key = result.get("result_id") if by_result else result.get("unit_id")
+            if key in folded:
                 continue
             reduce.fold(result)
-            folded.add(unit_id)
-            pending.discard(unit_id)
+            folded.add(key)
+            if pending is not None:
+                pending.discard(result.get("unit_id"))
             progressed = True
         if not page.next_cursor:
             return progressed, cursor
         cursor = page.next_cursor
+
+
+def _nonterminal_count(prog: Any) -> int | None:
+    """Number of this experiment's work units NOT yet settled (pending +
+    in_progress). None when progress is unavailable. COMPLETED is the only terminal
+    work_unit status (a diverged / floor-settled unit is also COMPLETED)."""
+    if prog is None:
+        return None
+    counts = prog.work_unit_counts or {}
+    return int(counts.get("pending", 0)) + int(counts.get("in_progress", 0))
+
+
+def _all_units_terminal(prog: Any) -> bool:
+    """True once the coordinator has settled EVERY work unit (none pending/in_progress)
+    — the wait-for-terminal round-completion signal for the raw observe-all path. The
+    round-synchronous loop guarantees the experiment holds only rounds 0..R at this
+    point, so 'all terminal' == 'this round is done'. A regime-3 PAUSE keeps units
+    in_progress → returns False → the driver waits through the pause (the
+    operator-visible 'cannot corroborate' state)."""
+    if prog is None or not prog.total_work_units:
+        return False
+    return _nonterminal_count(prog) == 0
 
 
 def _safe_progress(experiment: Experiment) -> Any:

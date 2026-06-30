@@ -467,3 +467,152 @@ def test_abort_after_policy_threshold() -> None:
     policy = AbortAfter(seconds=10)
     assert policy(StallContext(0, 1, 0, 1, 1, 9.0, None)).value == "wait"
     assert policy(StallContext(0, 1, 0, 1, 1, 10.0, None)).value == "abort"
+
+
+# ---- raw / observe-all (wait-for-terminal) path ----------------------------
+
+
+class RawFakeExperiment(FakeExperiment):
+    """The observe-all flow: emits `replicas` results per unit (raw observations,
+    distinct result_ids) and reports each unit terminal (work_unit `completed`) once
+    its replicas are in. A `blocked` unit emits nothing and stays `in_progress` (it
+    never settles) until `unblock` — modeling a non-terminal / regime-3-paused unit.
+    progress() carries the work_unit_counts that wait-for-terminal round-completion reads."""
+
+    def __init__(self, *, replicas: int = 2, **kw) -> None:
+        super().__init__(**kw)
+        self.replicas = replicas
+        self._total_units = 0
+        self._terminal: set[str] = set()
+
+    def submit_units(self, units, *, round=None) -> SubmitResult:
+        ids = [u.unit_id for u in units]
+        new = [u for u in units if u.unit_id not in self._seen]
+        if not new:
+            raise UnitsAlreadySubmittedError(409, "already submitted")
+        self.submitted_rounds.append((round, ids))
+        for u in new:
+            self._seen.add(u.unit_id)
+            self._total_units += 1
+            if self._blocked_id(u.unit_id):
+                self._withheld.append(u)  # stays in_progress until unblock
+            else:
+                self._emit_replicas(u)
+                self._terminal.add(u.unit_id)
+        return SubmitResult(ids, len(new))
+
+    def _emit_replicas(self, unit) -> None:
+        for k in range(self.replicas):
+            i = len(self._results)
+            self._results.append(
+                {
+                    "unit_id": unit.unit_id,
+                    "result_id": f"res-{unit.unit_id}-{k}",  # distinct per replica
+                    "completed_at": f"2026-01-01T00:00:{i:02d}+00:00",
+                    "payload": {**dict(unit.payload), "replica": k},
+                }
+            )
+
+    def unblock(self, prefix: str) -> None:
+        self._blocked = [p for p in self._blocked if p != prefix]
+        keep = []
+        for u in self._withheld:
+            if self._blocked_id(u.unit_id):
+                keep.append(u)
+            else:
+                self._emit_replicas(u)
+                self._terminal.add(u.unit_id)
+        self._withheld = keep
+
+    def progress(self):
+        from auspexai_tenant.experiment import Progress
+
+        terminal = len(self._terminal)
+        return Progress(
+            status="approved",
+            reduce_ready=False,
+            submissions_finalized=False,
+            total_work_units=self._total_units,
+            work_unit_counts={
+                "completed": terminal,
+                "in_progress": self._total_units - terminal,
+            },
+            completions_total=terminal,
+            replication_target_total=None,
+            active_contributor_count=None,
+            network_active_workers=None,
+        )
+
+
+def test_raw_folds_every_replica(tmp_path) -> None:
+    """Observe-all dedups by result_id, so EVERY replica of a unit is folded (vs the
+    consensus path's one-per-unit). 2 rounds x 2 units x 2 replicas = 8 folds."""
+    agg = Counter()
+    result = run_until(
+        RawFakeExperiment(replicas=2),
+        condition=lambda a: False,  # never converge via condition — run to max_rounds
+        next_batch=_batch_of(2),
+        reduce=agg,
+        journal=tmp_path / "j",
+        wake=_wake(),
+        include="raw",
+        max_rounds=2,
+    )
+    assert result.outcome == "max_rounds"
+    assert result.aggregate["total"] == 8
+
+
+def test_raw_completes_on_terminal_regardless_of_replica_count(tmp_path) -> None:
+    """Wait-for-TERMINAL, not wait-for-target: a unit that settles with only ONE
+    replica (the coordinator's C14 settle-at-floor on a thin/silent fleet) still
+    completes the round — the driver never waits for a replica count, so it can't hang
+    on a unit the coordinator deliberately settled below target."""
+    agg = Counter()
+    result = run_until(
+        RawFakeExperiment(replicas=1),
+        condition=lambda a: False,
+        next_batch=_batch_of(2),
+        reduce=agg,
+        journal=tmp_path / "j",
+        wake=_wake(),
+        include="raw",
+        max_rounds=2,
+    )
+    assert result.outcome == "max_rounds"  # both rounds completed — no hang
+    assert result.aggregate["total"] == 4  # 2 rounds x 2 units x 1 replica
+
+
+def test_raw_waits_until_all_units_terminal(tmp_path) -> None:
+    """A round does NOT complete while any unit is non-terminal (in_progress) — a
+    regime-3 pause looks the same, and the driver waits. Once the unit settles
+    (unblock), the round completes and folds every replica."""
+    exp = RawFakeExperiment(replicas=2, blocked_prefixes=("r0u1",))
+
+    class UnblockingWake:
+        def __init__(self) -> None:
+            self.waits = 0
+
+        def wait(self) -> None:
+            self.waits += 1
+            exp.unblock("r0u1")  # the stuck unit settles on the first wait
+
+        def progress(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    wake = UnblockingWake()
+    result = run_until(
+        exp,
+        condition=lambda a: False,
+        next_batch=_batch_of(2),
+        reduce=Counter(),
+        journal=tmp_path / "j",
+        wake=wake,
+        include="raw",
+        max_rounds=1,
+    )
+    assert result.outcome == "max_rounds"  # round 0 completed after the unit settled
+    assert wake.waits >= 1  # it actually waited for the non-terminal unit
+    assert result.aggregate["total"] == 4  # both units' 2 replicas folded

@@ -1020,6 +1020,7 @@ def experiment_run(
                 journal=journal_path,
                 wake=wake,
                 stall=spec.stall,
+                include=spec.include,
                 max_rounds=spec.max_rounds,
                 duration_cap_seconds=duration_cap_seconds,
             )
