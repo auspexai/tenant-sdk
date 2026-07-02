@@ -120,6 +120,14 @@ class BundleVerification:
     # The coordinator-asserted governance footprint, surfaced for the researcher
     # to correct for apparatus influence (None on pre-firewall attestations).
     governance_footprint: dict[str, Any] | None = None
+    # C7 Inc 4: a within_cell_tolerance unit is ATTESTED by its deterministic
+    # representative's hash (not a replica's), with the representative itself
+    # shipped in the bundle's `unit_consensus` block. This check RECOMPUTES each
+    # representative's hash from the bundled representative and matches it — the
+    # tolerance leaf is recomputable from bytes in hand, not merely internally
+    # consistent. None when the bundle carries no unit_consensus entries (exact /
+    # pre-Inc-4); False = a representative fails to recompute (tamper or strip).
+    tolerance_evidence_ok: bool | None = None
     # How the custody signer was grounded. "explicit" = pinned to a caller
     # --signer set; "known" = matched an embedded KNOWN_PUBLIC_SIGNERS key (the
     # default for public-network bundles); "unpinned" = no pin matched (signer
@@ -152,6 +160,7 @@ class BundleVerification:
             and self.inputs_bound_ok is not False
             and self.footprint_ok is not False
             and self.manifest_bound_ok is not False
+            and self.tolerance_evidence_ok is not False
             and self.worker_signatures.ok
         )
 
@@ -260,6 +269,17 @@ def verify_worker_signatures(
     )
 
 
+def _semantic_hash(exit_code: int, payload: dict[str, Any]) -> str:
+    """Mirror of the coordinator's semantic-hash convention
+    (`auspexai_platform.hashing.semantic_hash`): SHA-256 over canonical
+    ``{exit_code, payload}``. Used to RECOMPUTE a tolerance unit's attested
+    representative hash from the representative shipped in the bundle."""
+    canonical = json.dumps(
+        {"exit_code": exit_code, "payload": payload}, sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def _canonical_manifest_hash(manifest: dict[str, Any]) -> str:
     """The content-address of a manifest dict. MIRRORS the coordinator's
     ManifestRepository.hash_manifest (canonical JSON: sorted keys, compact
@@ -342,6 +362,15 @@ def verify_bundle(
         att_signers = None
 
     consensus = bundle.get("consensus_results") or []
+    # C7 Inc 4: {unit_id: evidence} from the bundle's unit_consensus block —
+    # tolerance units are ATTESTED by their deterministic representative's hash,
+    # delivered as a promoted replica row; this block bridges the two. Empty for
+    # exact / pre-Inc-4 bundles (all checks below then behave exactly as before).
+    uc_by_unit = {
+        u["unit_id"]: u
+        for u in (bundle.get("unit_consensus") or [])
+        if isinstance(u, dict) and u.get("unit_id")
+    }
 
     # 2-5. attestation chain (when the bundle carries one)
     att_verification: AttestationVerification | None = None
@@ -369,7 +398,14 @@ def verify_bundle(
         )
         if t.get("root_kind") and t["root_kind"] != FLAT_ROOT_KIND:
             root_unified = t["result_set_root"] == att.merkle_root
-        delivered = {(r["unit_id"], r.get("semantic_hash") or "") for r in consensus}
+
+        def _delivered_hash(r: dict[str, Any]) -> str:
+            uc = uc_by_unit.get(r["unit_id"])
+            if uc and uc.get("representative_hash"):
+                return uc["representative_hash"]
+            return r.get("semantic_hash") or ""
+
+        delivered = {(r["unit_id"], _delivered_hash(r)) for r in consensus}
         attested = {(u["unit_id"], u["consensus_result_hash"]) for u in att.units}
         completeness = delivered == attested
         if att.algorithm == RESULT_SET_ALGORITHM_V1 and att.units:
@@ -384,6 +420,19 @@ def verify_bundle(
     # 6. worker signatures — strict on v1 bundles (the members are guaranteed
     # there, so a missing field is a strip-tamper, not an old coordinator).
     ws = verify_worker_signatures(consensus, strict=schema is not None)
+
+    # C7 Inc 4: recompute each tolerance unit's attested representative hash from
+    # the representative shipped in the bundle — the leaf is recomputable from
+    # bytes in hand. An entry missing its representative (or failing the
+    # recompute) is a strip/tamper, never skipped.
+    tolerance_evidence: bool | None = None
+    if uc_by_unit:
+        tolerance_evidence = all(
+            isinstance(u.get("representative"), dict)
+            and bool(u.get("representative_hash"))
+            and _semantic_hash(0, u["representative"]) == u["representative_hash"]
+            for u in uc_by_unit.values()
+        )
 
     # 7. D16.1: bind the embedded manifest to the SIGNED manifest_hash (covered
     # by the transfer signature). None when either is absent (pre-D16.1 bundle /
@@ -407,6 +456,7 @@ def verify_bundle(
         governance_footprint=governance_footprint,
         worker_signatures=ws,
         signer_pin_mode=signer_pin_mode,
+        tolerance_evidence_ok=tolerance_evidence,
     )
 
 
@@ -436,6 +486,8 @@ class BundleVerificationError(Exception):
             failed.append("input binding (work-unit payload hashes)")
         if v.manifest_bound_ok is False:
             failed.append("manifest binding (embedded manifest != signed manifest_hash)")
+        if v.tolerance_evidence_ok is False:
+            failed.append("tolerance evidence (representative hash fails to recompute)")
         if v.worker_signatures.failed:
             failed.append(f"worker signatures ({', '.join(v.worker_signatures.failed)})")
         if not v.worker_signatures.ok and not v.worker_signatures.failed:

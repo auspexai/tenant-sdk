@@ -107,6 +107,18 @@ def _sign_worker_result(worker_key: Ed25519PrivateKey, r: dict) -> str:
     return b64encode(worker_key.sign(canonical)).decode()
 
 
+def _rep_hash(representative: dict) -> str:
+    """The coordinator's semantic-hash convention over the representative
+    (exit_code pinned 0) — what a tolerance unit's leaf binds (C7 Inc 4)."""
+    canonical = json.dumps(
+        {"exit_code": 0, "payload": representative}, sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+_TOL_REPRESENTATIVE = {"lexical.type_token_ratio": 0.5, "lexical.top_tokens": [["a", 1]]}
+
+
 def _make_bundle(
     coordinator_key: Ed25519PrivateKey,
     worker_key: Ed25519PrivateKey,
@@ -118,6 +130,7 @@ def _make_bundle(
     diverged_units: list[dict] | None = None,
     served_weights: dict | None = None,
     manifest: dict | None = None,
+    tolerance_unit: bool = False,
 ) -> dict:
     manifest = manifest if manifest is not None else {"experiment_id": "exp-label"}
     # D16.1: the embedded manifest must recompute to the signed manifest_hash
@@ -152,6 +165,16 @@ def _make_bundle(
         }
         if unit_basis is not None:
             att_unit["integrity_basis"] = unit_basis
+        # C7 Inc 4: u0 becomes a tolerance unit — ATTESTED by its deterministic
+        # representative's hash (≠ the delivered replica's semantic_hash), with
+        # the evidence shipped in the bundle's unit_consensus block below.
+        if tolerance_unit and i == 0:
+            att_unit["consensus_result_hash"] = _rep_hash(_TOL_REPRESENTATIVE)
+            att_unit["tolerance"] = {
+                "spread": {"lexical.type_token_ratio": 0.01},
+                "outlier_count": 1,
+                "envelope": {"lexical.type_token_ratio": {"rule": "numeric", "rel": 0.02}},
+            }
         att_units.append(att_unit)
     bundle: dict = {
         "schema": "auspexai-evidence-bundle/v1",
@@ -163,6 +186,19 @@ def _make_bundle(
         "receipts": [],
         "attestation": None,
     }
+    if tolerance_unit:
+        bundle["unit_consensus"] = [
+            {
+                "unit_id": "u0",
+                "method": "builtin_within_cell_tolerance",
+                "representative": _TOL_REPRESENTATIVE,
+                "representative_hash": _rep_hash(_TOL_REPRESENTATIVE),
+                "spread": {"lexical.type_token_ratio": 0.01},
+                "envelope": {"lexical.type_token_ratio": {"rule": "numeric", "rel": 0.02}},
+                "agreeing_workers": 2,
+                "outlier_count": 1,
+            }
+        ]
     if with_attestation:
         bundle["attestation"] = _sign_v1_attestation(
             att_units, coordinator_key, footprint=footprint, diverged_units=diverged_units
@@ -515,3 +551,49 @@ def test_v2_ran_under_is_signature_bound():
     tampered = {**r, "ran_under": "permissive"}
     bad = verify_worker_signatures([tampered], strict=True)
     assert bad.failed == ["res-u0"]
+
+
+# ---- C7 Inc 4: tolerance evidence (representative-hash leaf + recompute) -----
+
+
+def test_tolerance_bundle_verifies_and_recomputes_representative():
+    """A tolerance unit is delivered as a replica row but attested by its
+    representative's hash; the unit_consensus block bridges the two AND lets the
+    verifier recompute the leaf hash from bytes in hand."""
+    ck, wk = _keys()
+    v = verify_bundle(_make_bundle(ck, wk, tolerance_unit=True))
+    assert v.completeness_ok is True  # delivered mapped through unit_consensus
+    assert v.tolerance_evidence_ok is True  # representative hash recomputes
+    assert v.ok
+
+
+def test_tolerance_representative_tamper_fails():
+    """A tampered representative no longer recomputes to the attested hash."""
+    ck, wk = _keys()
+    bundle = _make_bundle(ck, wk, tolerance_unit=True)
+    bundle["unit_consensus"][0]["representative"]["lexical.type_token_ratio"] = 0.9
+    v = verify_bundle(bundle)
+    assert v.tolerance_evidence_ok is False
+    assert not v.ok
+
+
+def test_tolerance_stripped_unit_consensus_breaks_completeness():
+    """Stripping the unit_consensus block from a tolerance bundle is caught:
+    delivered rows fall back to replica hashes, which no longer match the
+    attested representative leaf."""
+    ck, wk = _keys()
+    bundle = _make_bundle(ck, wk, tolerance_unit=True)
+    del bundle["unit_consensus"]
+    v = verify_bundle(bundle)
+    assert v.completeness_ok is False
+    assert v.tolerance_evidence_ok is None  # nothing to recompute — the miss is completeness
+    assert not v.ok
+
+
+def test_non_tolerance_bundle_tolerance_check_is_lenient():
+    """Exact / pre-Inc-4 bundles carry no unit_consensus block — the tolerance
+    check is n/a (None), never a false FAIL (old bundles keep verifying)."""
+    ck, wk = _keys()
+    v = verify_bundle(_make_bundle(ck, wk))
+    assert v.tolerance_evidence_ok is None
+    assert v.ok

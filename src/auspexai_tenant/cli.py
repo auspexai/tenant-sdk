@@ -547,6 +547,10 @@ def experiment_export(
     click.echo(f"root unify:  {_fmt(v.root_unified)}")
     click.echo(f"complete:    {_fmt(v.completeness_ok)}")
     click.echo(f"inputs:      {_fmt(v.inputs_bound_ok)}")
+    if v.tolerance_evidence_ok is not None:
+        # C7 Inc 4: shown only when the bundle carries tolerance-consensus units
+        # (their attested representative hashes recompute from the bundled data).
+        click.echo(f"tolerance:   {_fmt(v.tolerance_evidence_ok)}")
     ws = v.worker_signatures
     skipped = ws.skipped_aged_off + ws.skipped_missing_fields
     click.echo(
@@ -1679,6 +1683,10 @@ def bundle_verify(
     click.echo(f"root unify:  {_fmt(v.root_unified)}")
     click.echo(f"complete:    {_fmt(v.completeness_ok)}")
     click.echo(f"inputs:      {_fmt(v.inputs_bound_ok)}")
+    if v.tolerance_evidence_ok is not None:
+        # C7 Inc 4: shown only when the bundle carries tolerance-consensus units
+        # (their attested representative hashes recompute from the bundled data).
+        click.echo(f"tolerance:   {_fmt(v.tolerance_evidence_ok)}")
     ws = v.worker_signatures
     skipped = ws.skipped_aged_off + ws.skipped_missing_fields
     click.echo(
