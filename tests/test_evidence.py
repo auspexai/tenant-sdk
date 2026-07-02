@@ -118,6 +118,17 @@ def _rep_hash(representative: dict) -> str:
 
 _TOL_REPRESENTATIVE = {"lexical.type_token_ratio": 0.5, "lexical.top_tokens": [["a", 1]]}
 
+_PRE_REG_BLOCK = {
+    "hypothesis": "responses to each fixed probe are stable across rounds",
+    "analysis_method": "per probe_id, compare the consensus vector round-over-round",
+    "features": ["lexical.type_token_ratio"],
+    "timescale": "intra_experiment_rounds",
+    "decision_rule": "drift IFF the consensus vector exits the declared envelope",
+    "expected_result": "no probe drifts",
+    "stopping_rule": "converge-on-stability; not data-peeking-dependent",
+    "comparison_keys": ["probe_id"],
+}
+
 
 def _make_bundle(
     coordinator_key: Ed25519PrivateKey,
@@ -131,8 +142,13 @@ def _make_bundle(
     served_weights: dict | None = None,
     manifest: dict | None = None,
     tolerance_unit: bool = False,
+    pre_registered: bool = False,
+    prereg_anchor: int | None = None,
+    att_anchor: int | None = None,
 ) -> dict:
-    manifest = manifest if manifest is not None else {"experiment_id": "exp-label"}
+    manifest = dict(manifest) if manifest is not None else {"experiment_id": "exp-label"}
+    if pre_registered:
+        manifest.setdefault("pre_registration", dict(_PRE_REG_BLOCK))
     # D16.1: the embedded manifest must recompute to the signed manifest_hash
     # (verify_bundle's manifest binding), so the fixture uses the real hash.
     mh = _canonical_manifest_hash(manifest)
@@ -203,6 +219,9 @@ def _make_bundle(
         bundle["attestation"] = _sign_v1_attestation(
             att_units, coordinator_key, footprint=footprint, diverged_units=diverged_units
         )
+        if att_anchor is not None:
+            bundle["attestation"]["rekor_log_index"] = att_anchor
+            bundle["attestation"]["rekor_entry_uuid"] = f"att-uuid-{att_anchor}"
         root = bundle["attestation"]["merkle_root"]
         root_kind = RESULT_SET_ALGORITHM_V1
     else:
@@ -212,6 +231,47 @@ def _make_bundle(
     collected_by = "cd" * 32
     collected_at = "2026-06-11T12:00:00+00:00"
     record = f"{root}|{collected_by}|{collected_at}|{mh}".encode()
+    if pre_registered:
+        prereg_predicate = cbor2.dumps(
+            {
+                "manifest_hash": mh,
+                "tenant_id": "tenant-a",
+                "experiment_id": "exp-label",
+                "pre_registration": manifest["pre_registration"],
+                "submitted_at": "2026-06-11T00:00:00+00:00",
+            },
+            canonical=True,
+        )
+        pr_statement = {
+            "_type": "https://www.in-toto.io/Statement/v1",
+            "subject": [
+                {
+                    "name": "auspexai:pre-registration/exp-123",
+                    "digest": {"sha256": hashlib.sha256(prereg_predicate).hexdigest()},
+                }
+            ],
+            "predicateType": "https://auspexai.network/pre-registration/v0",
+            "predicate": prereg_predicate,
+        }
+        pr_stmt_cbor = cbor2.dumps(pr_statement, canonical=True)
+        pr_protected = cbor2.dumps(
+            {_ALG: _EDDSA, _KID: _pub_hex(coordinator_key).encode("ascii")}, canonical=True
+        )
+        pr_sig = coordinator_key.sign(
+            cbor2.dumps(["Signature1", pr_protected, b"", pr_stmt_cbor], canonical=True)
+        )
+        pr_cose = cbor2.dumps([pr_protected, {}, pr_stmt_cbor, pr_sig], canonical=True)
+        bundle["pre_registration"] = {
+            "manifest_hash": mh,
+            "submitted_at": "2026-06-11T00:00:00+00:00",
+            "cose_b64": b64encode(pr_cose).decode(),
+            "signing_key_pubkey_hex": _pub_hex(coordinator_key),
+            "rekor_log_index": prereg_anchor if prereg_anchor is not None else 0,
+            "rekor_entry_uuid": (
+                f"pr-uuid-{prereg_anchor}" if prereg_anchor is not None else "lab-mode-no-rekor"
+            ),
+            "rekor_inclusion_proof": None,
+        }
     bundle["transfer"] = {
         "transfer_id": "xfer-test",
         "result_set_root": root,
@@ -596,4 +656,65 @@ def test_non_tolerance_bundle_tolerance_check_is_lenient():
     ck, wk = _keys()
     v = verify_bundle(_make_bundle(ck, wk))
     assert v.tolerance_evidence_ok is None
+    assert v.ok
+
+
+# ---- D16.2: pre-registration binding + design ≺ data -------------------------
+
+
+def test_pre_registered_bundle_verifies_ordering_pending():
+    """A pre-registered bundle whose anchors are still pending (the hourly sweep
+    hasn't run): the binding verifies; the ordering is n/a — pending is never a
+    failure."""
+    ck, wk = _keys()
+    v = verify_bundle(_make_bundle(ck, wk, pre_registered=True))
+    assert v.prereg_bound_ok is True
+    assert v.design_precedes_data_ok is None
+    assert v.ok
+
+
+def test_design_precedes_data_ok_and_fail():
+    ck, wk = _keys()
+    good = verify_bundle(
+        _make_bundle(ck, wk, pre_registered=True, prereg_anchor=100, att_anchor=200)
+    )
+    assert good.design_precedes_data_ok is True and good.ok
+    # The design anchored AFTER the results = retroactive pre-registration.
+    bad = verify_bundle(
+        _make_bundle(ck, wk, pre_registered=True, prereg_anchor=300, att_anchor=200)
+    )
+    assert bad.design_precedes_data_ok is False
+    assert not bad.ok
+
+
+def test_swapped_design_in_manifest_fails_binding():
+    """The anchored design must equal the embedded manifest's block — a post-hoc
+    edit of the manifest's pre_registration (against the anchored statement) is
+    caught even before the manifest-hash check would see it."""
+    ck, wk = _keys()
+    bundle = _make_bundle(ck, wk, pre_registered=True)
+    bundle["manifest"]["pre_registration"]["decision_rule"] = "whatever looks significant"
+    v = verify_bundle(bundle)
+    assert v.prereg_bound_ok is False
+    assert not v.ok
+
+
+def test_prereg_blob_signature_tamper_fails():
+    ck, wk = _keys()
+    bundle = _make_bundle(ck, wk, pre_registered=True)
+    # Flip a signature bit — the Ed25519 verify against the embedded kid fails.
+    blob = bytearray(b64decode(bundle["pre_registration"]["cose_b64"]))
+    blob[-1] ^= 0x01  # flip a signature bit
+    bundle["pre_registration"]["cose_b64"] = b64encode(bytes(blob)).decode()
+    v = verify_bundle(bundle)
+    assert v.prereg_bound_ok is False
+    assert not v.ok
+
+
+def test_non_pre_registered_bundle_is_lenient():
+    """Exploratory runs carry no pre_registration — both checks n/a, never a
+    false FAIL (old bundles keep verifying)."""
+    ck, wk = _keys()
+    v = verify_bundle(_make_bundle(ck, wk))
+    assert v.prereg_bound_ok is None and v.design_precedes_data_ok is None
     assert v.ok

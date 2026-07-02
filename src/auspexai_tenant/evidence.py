@@ -45,6 +45,7 @@ from auspexai_tenant.attestation import (
     RESULT_SET_ALGORITHM_V1,
     AttestationVerification,
     ResultSetAttestation,
+    _cose_verify,
     unit_payload_sha256,
     verify_attestation,
 )
@@ -120,6 +121,18 @@ class BundleVerification:
     # The coordinator-asserted governance footprint, surfaced for the researcher
     # to correct for apparatus influence (None on pre-firewall attestations).
     governance_footprint: dict[str, Any] | None = None
+    # D16.2: the pre-registration binding — the bundle's submit-time anchor
+    # blob COSE-verifies, its signed predicate binds THIS bundle's manifest hash,
+    # and the design it anchors equals the embedded manifest's pre_registration
+    # (with manifest_bound_ok, the reported analysis is provably the declared
+    # one). None when the bundle carries no pre_registration (exploratory runs /
+    # pre-D16.2); False = tamper or a swapped design.
+    prereg_bound_ok: bool | None = None
+    # D16.2: `design ≺ data` — the pre-registration's Rekor anchor precedes the
+    # result attestation's. None until BOTH carry real anchors (the hourly
+    # backfill may not have run yet — pending is never a failure); False = the
+    # design was anchored AFTER the results (retroactive pre-registration).
+    design_precedes_data_ok: bool | None = None
     # C7 Inc 4: a within_cell_tolerance unit is ATTESTED by its deterministic
     # representative's hash (not a replica's), with the representative itself
     # shipped in the bundle's `unit_consensus` block. This check RECOMPUTES each
@@ -161,6 +174,8 @@ class BundleVerification:
             and self.footprint_ok is not False
             and self.manifest_bound_ok is not False
             and self.tolerance_evidence_ok is not False
+            and self.prereg_bound_ok is not False
+            and self.design_precedes_data_ok is not False
             and self.worker_signatures.ok
         )
 
@@ -267,6 +282,63 @@ def verify_worker_signatures(
         skipped_missing_fields=skipped_missing,
         strict=strict,
     )
+
+
+_NOT_ANCHORED_UUID = "lab-mode-no-rekor"
+
+
+def _real_anchor(log_index: Any, entry_uuid: Any) -> bool:
+    """A genuine Rekor anchor (not the pending/lab placeholder)."""
+    return bool(log_index) and bool(entry_uuid) and entry_uuid != _NOT_ANCHORED_UUID
+
+
+def _verify_prereg_binding(
+    pr_block: dict[str, Any],
+    bundle: dict[str, Any],
+    transfer: dict[str, Any],
+    authorized_signers: list[str] | None,
+) -> bool:
+    """D16.2: the pre-registration blob COSE-verifies; its signed predicate binds
+    THIS bundle's manifest hash; and the design it anchors equals the embedded
+    manifest's pre_registration block (analysis-matches-declared: with
+    manifest_bound_ok, the analysis the manifest declares is provably the one
+    that was anchored before data existed). Any decode failure is False —
+    a malformed anchor never passes."""
+    try:
+        valid, signer_hex, payload = _cose_verify(b64decode(pr_block["cose_b64"]))
+        if not valid:
+            return False
+        if authorized_signers is not None and (
+            signer_hex is None or signer_hex.lower() not in {s.lower() for s in authorized_signers}
+        ):
+            return False
+        statement = cbor2.loads(payload)
+        predicate = cbor2.loads(statement["predicate"])
+    except Exception:
+        return False
+    signed_mh = transfer.get("manifest_hash")
+    if not signed_mh or predicate.get("manifest_hash") != signed_mh:
+        return False
+    if pr_block.get("manifest_hash") != signed_mh:
+        return False
+    # The anchored design == the manifest's declared design (when embedded).
+    manifest = bundle.get("manifest")
+    if isinstance(manifest, dict):
+        if predicate.get("pre_registration") != manifest.get("pre_registration"):
+            return False
+    # The result attestation's binding (maximal tier), when it carries one,
+    # must reference the same design.
+    att_block = bundle.get("attestation")
+    if att_block:
+        try:
+            att_cose = cbor2.loads(b64decode(att_block["cose_b64"]))
+            att_pred = cbor2.loads(cbor2.loads(att_cose[2])["predicate"])
+            att_ref = att_pred.get("pre_registration")
+            if att_ref is not None and att_ref.get("manifest_hash") != signed_mh:
+                return False
+        except Exception:
+            return False
+    return True
 
 
 def _semantic_hash(exit_code: int, payload: dict[str, Any]) -> str:
@@ -434,6 +506,22 @@ def verify_bundle(
             for u in uc_by_unit.values()
         )
 
+    # D16.2: the pre-registration binding + `design ≺ data` ordering.
+    prereg_bound: bool | None = None
+    design_precedes_data: bool | None = None
+    pr_block = bundle.get("pre_registration")
+    if pr_block:
+        prereg_bound = _verify_prereg_binding(pr_block, bundle, t, att_signers)
+        att_block_anchor = bundle.get("attestation") or {}
+        if _real_anchor(
+            pr_block.get("rekor_log_index"), pr_block.get("rekor_entry_uuid")
+        ) and _real_anchor(
+            att_block_anchor.get("rekor_log_index"), att_block_anchor.get("rekor_entry_uuid")
+        ):
+            design_precedes_data = int(pr_block["rekor_log_index"]) < int(
+                att_block_anchor["rekor_log_index"]
+            )
+
     # 7. D16.1: bind the embedded manifest to the SIGNED manifest_hash (covered
     # by the transfer signature). None when either is absent (pre-D16.1 bundle /
     # old coordinator); False = the manifest body was swapped — so its
@@ -457,6 +545,8 @@ def verify_bundle(
         worker_signatures=ws,
         signer_pin_mode=signer_pin_mode,
         tolerance_evidence_ok=tolerance_evidence,
+        prereg_bound_ok=prereg_bound,
+        design_precedes_data_ok=design_precedes_data,
     )
 
 
@@ -488,6 +578,10 @@ class BundleVerificationError(Exception):
             failed.append("manifest binding (embedded manifest != signed manifest_hash)")
         if v.tolerance_evidence_ok is False:
             failed.append("tolerance evidence (representative hash fails to recompute)")
+        if v.prereg_bound_ok is False:
+            failed.append("pre-registration binding (anchor/signature/design mismatch)")
+        if v.design_precedes_data_ok is False:
+            failed.append("design ≺ data ordering (the design was anchored AFTER the results)")
         if v.worker_signatures.failed:
             failed.append(f"worker signatures ({', '.join(v.worker_signatures.failed)})")
         if not v.worker_signatures.ok and not v.worker_signatures.failed:

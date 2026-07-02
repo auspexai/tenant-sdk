@@ -551,6 +551,15 @@ def experiment_export(
         # C7 Inc 4: shown only when the bundle carries tolerance-consensus units
         # (their attested representative hashes recompute from the bundled data).
         click.echo(f"tolerance:   {_fmt(v.tolerance_evidence_ok)}")
+    if v.prereg_bound_ok is not None:
+        # D16.2: shown only for a pre-registered run.
+        click.echo(f"pre-reg:     {_fmt(v.prereg_bound_ok)}")
+        ordering = (
+            "n/a (anchor pending — the hourly sweep)"
+            if v.design_precedes_data_ok is None
+            else ("ok" if v.design_precedes_data_ok else "FAIL")
+        )
+        click.echo(f"design<data: {ordering}")
     ws = v.worker_signatures
     skipped = ws.skipped_aged_off + ws.skipped_missing_fields
     click.echo(
@@ -1687,6 +1696,15 @@ def bundle_verify(
         # C7 Inc 4: shown only when the bundle carries tolerance-consensus units
         # (their attested representative hashes recompute from the bundled data).
         click.echo(f"tolerance:   {_fmt(v.tolerance_evidence_ok)}")
+    if v.prereg_bound_ok is not None:
+        # D16.2: shown only for a pre-registered run.
+        click.echo(f"pre-reg:     {_fmt(v.prereg_bound_ok)}")
+        ordering = (
+            "n/a (anchor pending — the hourly sweep)"
+            if v.design_precedes_data_ok is None
+            else ("ok" if v.design_precedes_data_ok else "FAIL")
+        )
+        click.echo(f"design<data: {ordering}")
     ws = v.worker_signatures
     skipped = ws.skipped_aged_off + ws.skipped_missing_fields
     click.echo(
