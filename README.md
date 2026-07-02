@@ -51,7 +51,8 @@ coordinator (`https://coord.auspexai.network`).
   installing the SDK there. Includes **`InferenceClient`** for
   LLM-inference tenants: deterministic chat against the model the worker
   serves over a sandbox-local socket (temperature pinned to 0 by the worker;
-  seed/num_predict/num_ctx whitelisted).
+  seed/num_predict/num_ctx whitelisted — a `temperature>0` manifest is
+  rejected at submit today; seeded sampling arrives with manifest v0.2-M1).
 - Static work-unit packing (`tar_writer`/`tar_reader`) and package-digest
   helpers that match the worker's verification byte-for-byte.
 
@@ -59,10 +60,20 @@ coordinator (`https://coord.auspexai.network`).
 
 - Ed25519 tenant keypair (`key generate` / `key pubkey`); every API call is
   signed (RFC 9421 HTTP message signatures) — no passwords, no tokens.
-- `manifest validate` → `manifest sign` → `manifest upload`. Manifests are
-  immutable once submitted (manifest-swap protection: work units bind the
-  manifest hash); a maintainer approves the experiment before any work is
-  scheduled.
+- **`experiment launch`** — build → sign → submit → await approval → drive,
+  one command (`experiment build` / `submit` / `run` are the step-by-step
+  path; `manifest validate/sign/upload` remain the low-level primitives).
+  Manifests are immutable once submitted (manifest-swap protection: work
+  units bind the manifest hash); certified starters auto-clear, everything
+  else is approved by a maintainer before any work is scheduled.
+- **Pre-registration (manifest v0.4)** — an optional `[pre_registration]`
+  block declares the hypothesis, analysis, and stopping rule *before data
+  exists*; the coordinator anchors it in the public transparency log at
+  submit, so the bundle later proves **`design ≺ data`**. The comparison
+  envelope is *referenced* from the `[feature_schema]`, never re-declared.
+  Required for a citable/DOI'd result; if the analysis changes post-data,
+  `experiment deviate` records an append-only, signed deviation — honest
+  exploratory work, never a silent edit.
 - **Model catalog**: `model catalog` surfaces the network's bottom-up model
   catalog — the emergent set of models the active workers declare they serve.
 
@@ -101,6 +112,15 @@ verifies all of it independently:
   database row.
 - Per-result **worker signatures** — the only signatures in the chain not
   made by the coordinator — verify from the bundle alone.
+- **Tolerance evidence** (C7): a `within_cell_tolerance` unit is attested by
+  its deterministic *representative's* hash; the bundle's `unit_consensus`
+  block lets the verifier recompute it from bytes in hand, with the
+  per-feature spread + outlier count as the researcher-facing evidence.
+- **Pre-registration**: `bundle verify` prints `pre-reg:` (the anchored
+  design is this manifest's design), `design<data:` (the design's Rekor
+  anchor precedes the results' — *pending* until the hourly sweep anchors
+  both), and `deviations: N declared` (each record's declarer signature +
+  anchor verify; zero = the pre-registered analysis stands).
 
 ### 6. Take custody & analyze
 
@@ -128,7 +148,7 @@ verifies all of it independently:
 |---|---|
 | `key` | Ed25519 tenant keypair (generate, pubkey) |
 | `manifest` | validate, sign, upload an experiment manifest |
-| `experiment` | list, status, run (autonomic driver), results, receipts, attestation, reduce, export |
+| `experiment` | build, submit, launch (one-command lifecycle), list, status, run (autonomic driver), results, receipts, attestation, reduce, export, deviate (declare a signed deviation from the pre-registered design) |
 | `bundle` | verify a saved evidence bundle offline; write it as a CSV/Parquet table |
 | `model` | browse the network model catalog |
 | `receipts` | decode/pretty-print CBOR receipts |

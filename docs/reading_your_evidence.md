@@ -27,7 +27,7 @@ from auspexai_tenant import evidence
 df = evidence.load_verified("evidence.json")   # raises if anything fails to verify
 ```
 
-`verify_bundle` (run by all of the above) checks: the proof-of-transfer signature, external key pinning, the attestation block + Merkle-root unification, **completeness** (no rows dropped), **input binding** (each result ties to its work unit), and **per-result worker signatures**. **A DataFrame in hand is already trustworthy data** — if it didn't verify, you don't have it.
+`verify_bundle` (run by all of the above) checks: the proof-of-transfer signature, external key pinning, the attestation block + Merkle-root unification, **completeness** (no rows dropped), **input binding** (each result ties to its work unit), **per-result worker signatures**, **tolerance evidence** (each tolerance-consensus unit's attested representative hash recomputes from the bundled evidence), and — for a pre-registered run — the **pre-registration binding** plus **`design ≺ data`** ordering and **deviation disclosure** (see the section below). **A DataFrame in hand is already trustworthy data** — if it didn't verify, you don't have it.
 
 ## Where the context lives (two layers — use both)
 
@@ -35,7 +35,7 @@ df = evidence.load_verified("evidence.json")   # raises if anything fails to ver
 
 | Column | What it tells you | Use it to |
 |---|---|---|
-| `integrity_basis` | what the result's assurance *rests on*: `within_cell_exact` (≥2 independent replicas agreed) · `within_cell_tolerance` (agreed within a declared envelope) · `process_only` (one worker, no peer to corroborate) · `diverged` (replicas disagreed) | **stratify, don't pool** — a `process_only` row and a `within_cell_exact` row are different evidence classes |
+| `integrity_basis` | what the result's assurance *rests on*: `within_cell_exact` (≥2 replicas byte-identical) · `within_cell_tolerance` (≥2 replicas agreed **within each feature's declared, calibrated `comparison` envelope** — the attested consensus value is a deterministic *representative* of the agreeing set, and the bundle's `unit_consensus` block carries the per-feature spread + outlier count; this is what the dashboard's "N workers agreed within tolerance · M outliers" line renders) · `process_only` (one worker, no peer to corroborate) · `diverged` (replicas disagreed) | **stratify, don't pool** — a `process_only` row and a corroborated row are different evidence classes |
 | `ran_under` | the sandbox the worker **signed** it ran under (`strict` / `permissive`) | stratify by containment; treat `permissive` as lower-assurance |
 | `served_weights` | the worker-attested model digest `{model_id: gguf_sha256}` that produced the row | confirm the model; compare only across matching digests unless cross-model IS the question |
 | `semantic_hash` | the canonical content hash the consensus agreed on | dedupe / join |
@@ -75,9 +75,20 @@ df = evidence.load_verified("evidence.json")   # raises if anything fails to ver
 6. **Cite the anchor.** When a claim must be externally defensible, cite the Rekor entry so anyone can confirm the attestation existed without trusting you or us:
    > Attested in the public transparency log (Rekor) at **logIndex 1770786010**, integratedTime **2026-06-09T17:42:31Z** — independently checkable at the configured Rekor instance.
 
+## Pre-registration & deviations — was the claim declared before the data?
+
+A pre-registered run (manifest v0.4's `pre_registration` block — the certified Vigiles starter ships one) carries the strongest epistemic claim a bundle can make: **the hypothesis, analysis, and stopping rule were fixed and publicly anchored *before* any result existed.** Three verify lines cover it:
+
+- **`pre-reg: ok`** — the submit-time anchor statement verifies and binds *this* bundle's manifest; the design in your manifest is provably the one that was anchored (analysis-matches-declared).
+- **`design<data: ok`** — the design's transparency-log anchor **precedes** the result attestation's (`design ≺ data`). It reads *pending* until the hourly Rekor sweep has anchored both — pending is never a failure; **FAIL means the design was anchored after the results** (retroactive pre-registration), and the bundle correctly refuses to verify.
+- **`deviations: N declared`** — the append-only history of signed analysis changes. **Zero deviations means the pre-registered analysis stands** — and that claim is machine-checked. Declaring deviations never fails a bundle (honest exploratory work is the point; `auspexai-tenant experiment deviate <exp> --what … --why …`); a deviation record that fails to *verify* (a post-hoc edit) does.
+
+Report accordingly: an analysis in the pre-registered block is **confirmatory**; anything else is **exploratory** — cite the deviation record that discloses it. The result attestation's signed predicate also carries the pre-registration reference, so the finding and its design are cryptographically bound.
+
 ## What this protects you from
 
 - **Over-claiming** from unreplicated or low-independence results.
 - **Mixing evidence classes** (strict + permissive, or different `integrity_basis`) into one misleading average.
 - **Mistaking apparatus influence for a finding.**
 - **Analyzing tampered or incomplete data** — verification + completeness catch it before you ever see a frame.
+- **Post-hoc analysis masquerading as confirmatory** — `design ≺ data` + deviation disclosure make the exploratory/confirmatory line checkable, not a matter of trust.

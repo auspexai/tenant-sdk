@@ -96,6 +96,19 @@ One row per consensus result. Alongside your `output.*` feature columns and `inp
 
 ### Step 3 — the analysis recipes
 
+> **Confirmatory vs exploratory (pre-registration).** If the run was
+> pre-registered (the certified Vigiles starter is — manifest v0.4's
+> `pre_registration` block), its `analysis_method`, `decision_rule`, and
+> `stopping_rule` were declared in the signed manifest and anchored in the
+> public transparency log *before any data existed* (`design ≺ data` — the
+> trust guide covers the verify lines). Analysis inside that declaration is
+> **confirmatory**; the recipes below are fair game as **exploratory**
+> follow-ups — just report them as such, and if you adopt a changed analysis,
+> declare it: `auspexai-tenant experiment deviate <exp> --what "…" --why "…"`
+> (append-only + signed; zero deviations means the pre-registered analysis
+> stands, and that claim is machine-checked).
+
+
 **Recipe A — drop degenerate rows (always do this first).**
 ```python
 # a feature is only interpretable where its .valid flag isn't False
