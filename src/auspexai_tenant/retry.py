@@ -1,0 +1,73 @@
+"""D18 — transient-error retry for coordinator HTTP.
+
+The long-running driver loop (`driver.run_until`) polls the coordinator over a
+Cloudflare tunnel where transient failures are NORMAL, not exceptional: 502/503/504
+edge pages, read timeouts, and truncated chunked reads (`httpx.RemoteProtocolError`,
+a `TransportError`). Before D18 a single blip raised straight out of the poll and
+killed the driver — it exited without aborting or a resume hint, orphaning an
+`approved` run that the dashboard still showed as healthy (the C16 incident's third
+finding).
+
+`call_with_retry` wraps ONE HTTP call: it retries the TRANSIENT class with bounded,
+jittered exponential backoff and re-raises only after the budget is spent — at which
+point the CLI surfaces it loudly with a resume/abort choice (never a silent orphan).
+Non-transient responses (2xx, 4xx, auth failures, the semantic 409s) pass straight
+through, so the caller's normal status handling is unchanged. Retry is safe: reads
+are idempotent, and the coordinator's submit idempotency (a re-sent submit that
+already landed returns 409 `UnitsAlreadySubmitted`, treated as success) makes the
+POST path safe too.
+"""
+
+from __future__ import annotations
+
+import random
+import time
+from collections.abc import Callable
+
+import httpx
+
+# Cloudflare / edge transients a retry usually rides out. 5xx only — a 4xx is a real
+# client error the caller must see immediately.
+_TRANSIENT_STATUS = frozenset({502, 503, 504})
+_DEFAULT_ATTEMPTS = 5
+
+
+def call_with_retry(
+    fn: Callable[[], httpx.Response],
+    *,
+    attempts: int = _DEFAULT_ATTEMPTS,
+    base_delay: float = 0.5,
+    max_delay: float = 8.0,
+    sleep: Callable[[float], None] = time.sleep,
+    rand: Callable[[], float] = random.random,
+) -> httpx.Response:
+    """Call `fn` (which performs one HTTP request), retrying TRANSIENT failures —
+    `httpx.TransportError` (connect/read timeout, connection reset, truncated
+    chunked read) and a 502/503/504 response — with bounded, jittered exponential
+    backoff.
+
+    Returns the response for a success, a non-transient status, or the final
+    attempt (a lingering transient 5xx is returned so the caller raises its normal
+    `CoordinatorError`). Raises the last `httpx.TransportError` if every attempt
+    failed at the transport layer. `sleep`/`rand` are injectable for tests.
+    """
+    if attempts < 1:
+        raise ValueError("attempts must be >= 1")
+    last_exc: httpx.TransportError | None = None
+    for i in range(attempts):
+        is_last = i == attempts - 1
+        try:
+            resp = fn()
+        except httpx.TransportError as exc:
+            last_exc = exc
+            if is_last:
+                raise
+        else:
+            if is_last or resp.status_code not in _TRANSIENT_STATUS:
+                return resp
+        # backoff before the next attempt: base*2^i clamped, times jitter in [0.5, 1.5)
+        delay = min(max_delay, base_delay * (2**i))
+        sleep(delay * (0.5 + rand()))
+    # Unreachable: the final iteration always returns or raises. Present for the
+    # type-checker and as a defensive backstop.
+    raise last_exc if last_exc is not None else RuntimeError("call_with_retry exhausted")

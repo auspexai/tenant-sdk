@@ -1049,6 +1049,22 @@ def experiment_run(
                 err=True,
             )
         sys.exit(130)
+    except (httpx.RequestError, CoordinatorError) as e:
+        # D18 (network→client resilience): a transient tunnel failure that OUTLASTED
+        # the retry budget (retry.call_with_retry), or another coordinator error,
+        # killed the driver loop. Never a silent orphan — the run is still `approved`
+        # server-side and resumable from the journal's last round checkpoint. Surface
+        # the explicit choice LOUDLY + non-zero (symmetric with the D14 Ctrl-C path);
+        # C16's E14 detector is the backstop that also flags the abandoned run.
+        click.echo(
+            f"\ndriver stopped — coordinator unreachable or erroring ({e}).\n"
+            f"{experiment_id} is still running server-side (NOT aborted). Once it is "
+            f"reachable again:\n"
+            f"  resume:  auspexai-tenant experiment run {label}\n"
+            f"  abort:   auspexai-tenant experiment abort {label}   (or via the dashboard)",
+            err=True,
+        )
+        sys.exit(1)
     click.echo(f"outcome:  {result.outcome}")
     click.echo(f"rounds:   {result.rounds}")
     if result.outcome == "time_capped":

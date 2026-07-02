@@ -31,6 +31,7 @@ from auspexai_tenant.attestation import ResultSetAttestation
 from auspexai_tenant.http_signing import Rfc9421Auth
 from auspexai_tenant.manifest import compute_package_digest
 from auspexai_tenant.package import build_package_archive
+from auspexai_tenant.retry import call_with_retry
 from auspexai_tenant.signing import TenantKey
 
 DEFAULT_TIMEOUT_S = 30.0
@@ -80,11 +81,14 @@ class TenantClient:
         url = f"{self._base}{path}"
         # The signature covers @path only (not @query), so query params ride
         # unsigned — safe per the coordinator's RFC 9421 verification.
-        if self._client is None:
-            with httpx.Client(timeout=self._timeout) as c:
-                resp = c.get(url, auth=self._auth, params=params)
-        else:
-            resp = self._client.get(url, auth=self._auth, params=params)
+
+        def _do() -> httpx.Response:
+            if self._client is None:
+                with httpx.Client(timeout=self._timeout) as c:
+                    return c.get(url, auth=self._auth, params=params)
+            return self._client.get(url, auth=self._auth, params=params)
+
+        resp = call_with_retry(_do)  # D18: ride out transient tunnel failures (the poll path)
         if not resp.is_success:
             raise CoordinatorError(resp.status_code, resp.text)
         return resp.json()

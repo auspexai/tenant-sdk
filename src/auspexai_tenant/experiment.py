@@ -34,6 +34,7 @@ import httpx
 from auspexai_tenant.attestation import ResultSetAttestation
 from auspexai_tenant.client import CoordinatorError, TenantClient
 from auspexai_tenant.http_signing import Rfc9421Auth
+from auspexai_tenant.retry import call_with_retry
 from auspexai_tenant.signing import TenantKey
 
 DEFAULT_TIMEOUT_S = 30.0
@@ -169,10 +170,17 @@ class Experiment:
 
     def _post(self, path: str, *, json: dict[str, Any] | None = None) -> httpx.Response:
         url = f"{self._base}{path}"
-        if self._client is None:
-            with httpx.Client(timeout=self._timeout) as c:
-                return c.post(url, auth=self._auth, json=json)
-        return self._client.post(url, auth=self._auth, json=json)
+
+        def _do() -> httpx.Response:
+            if self._client is None:
+                with httpx.Client(timeout=self._timeout) as c:
+                    return c.post(url, auth=self._auth, json=json)
+            return self._client.post(url, auth=self._auth, json=json)
+
+        # D18: retry transient tunnel failures. Safe: the coordinator's submit
+        # idempotency turns a re-sent-but-already-landed POST into a 409 the caller
+        # treats as success.
+        return call_with_retry(_do)
 
     # ---- submit ------------------------------------------------------------
 
