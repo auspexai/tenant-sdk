@@ -348,13 +348,53 @@ class FeatureDeclaration(BaseModel):
         return self
 
 
-class Manifest(BaseModel):
-    """AuspexAI tenant manifest, v0.1 / v0.2 / v0.3.
+class PreRegistration(BaseModel):
+    """D16.2: the pre-registered experiment design (preregistration_design.md §3).
 
-    Mirrors schemas/manifest_v0_1.json + v0_2.json + v0_3.json. Each version is a
-    superset of the prior, enforcement keyed on PRESENCE: v0.2 adds four optional
-    members (M1-M4); v0.3 adds the optional `feature_schema` (D16.1). Older
-    versions stay valid forever (re-verify-forever, no forced migration). See
+    Declares the hypothesis, analysis, and decision rule BEFORE any data exists.
+    The tenant signature makes the block tamper-evident; the coordinator's
+    submit-time Rekor anchor makes `design ≺ data` publicly provable (the anchor
+    at submit precedes the result attestation's anchor at completion). Required
+    for a citable/DOI'd result (§7 — a TECHNICAL gate, ratified no-waiver);
+    optional for exploratory runs.
+
+    The comparison envelope is NOT re-declared here: `features` NAMES declared
+    feature_schema paths, and the pre-registered envelope IS each feature's
+    `comparison` in the same signed manifest — one declaration, nothing to drift
+    (the D16.1 §5 reconciliation precedent; the design doc's own "declare the
+    same thing once"). Every field describes the DESIGN over declared features —
+    §7-safe, never raw output. A post-hoc analysis change is a signed, append-only
+    deviation record, never an edit (§5)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Q2 (ratified as proposed): the block is SDK-versioned like the result schema.
+    version: Literal["0.1"] = "0.1"
+    hypothesis: Annotated[str, Field(min_length=20, max_length=2000)]
+    analysis_method: Annotated[str, Field(min_length=10, max_length=2000)]
+    # Dotted feature_schema paths the analysis reads — each must be declared and
+    # must carry a `comparison` (the pre-registered envelope). Manifest-validated.
+    features: Annotated[list[str], Field(min_length=1)]
+    timescale: Literal["intra_experiment_rounds", "long_horizon", "inter_experiment"]
+    decision_rule: Annotated[str, Field(min_length=10, max_length=2000)]
+    expected_result: Annotated[str, Field(min_length=5, max_length=2000)]
+    # Q4: required — a declared stopping rule precludes "ran until it looked
+    # good" (data-peeking-dependent stopping is visible as a deviation).
+    stopping_rule: Annotated[str, Field(min_length=10, max_length=1000)]
+    # Stable join keys for the comparison (esp. inter-experiment drift series).
+    comparison_keys: list[str] = Field(default_factory=list)
+    # Q4: optional power declaration (minimum corroboration for the claim).
+    min_replication: Annotated[int | None, Field(ge=1)] = None
+
+
+class Manifest(BaseModel):
+    """AuspexAI tenant manifest, v0.1 / v0.2 / v0.3 / v0.4.
+
+    Mirrors schemas/manifest_v0_1.json + v0_2.json + v0_3.json + v0_4.json. Each
+    version is a superset of the prior, enforcement keyed on PRESENCE: v0.2 adds
+    four optional members (M1-M4); v0.3 adds the optional `feature_schema`
+    (D16.1); v0.4 adds the optional `pre_registration` (D16.2). Older versions
+    stay valid forever (re-verify-forever, no forced migration). See
     sdk_license_boundary_position.md §6.2 for the published-contract framing.
     """
 
@@ -364,7 +404,7 @@ class Manifest(BaseModel):
     # Every superset member is OPTIONAL — enforcement keys on PRESENCE, so a
     # manifest declaring none of a version's members is structurally the prior
     # version with schema_version bumped.
-    schema_version: Literal["0.1", "0.2", "0.3"]
+    schema_version: Literal["0.1", "0.2", "0.3", "0.4"]
     tenant_id: Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]{2,63}$")]
     tenant_maintainer_contact: EmailStr
     experiment_id: Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]{2,127}$")]
@@ -397,6 +437,9 @@ class Manifest(BaseModel):
     # presence); required for certified/citable experiments, optional for BYOT
     # (the coordinator gate, Inc 2). See feature_schema_design.md.
     feature_schema: dict[str, FeatureDeclaration] | None = None
+    # v0_4 / D16.2 — the pre-registered design. Optional (exploratory runs);
+    # required for a citable/DOI'd result. See preregistration_design.md.
+    pre_registration: PreRegistration | None = None
 
     @model_validator(mode="after")
     def _sensitive_requires_attestation(self) -> Manifest:
@@ -405,6 +448,44 @@ class Manifest(BaseModel):
                 "approver_attestations is required when sensitive_content_flags is non-empty "
                 "(Principles §5.12 research ethics)"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _pre_registration_references_declared_features(self) -> Manifest:
+        """D16.2: a pre-registration must be CHECKABLE against this same manifest —
+        its analysis features exist in the feature_schema and each carries the
+        `comparison` envelope the design pre-registers (referenced, never
+        duplicated); its comparison_keys are declared features too. This is the
+        epistemic-integrity seam D16.5 guards: enforced at build AND mirrored at
+        coordinator submit."""
+        pr = self.pre_registration
+        if pr is None:
+            return self
+        if self.schema_version in ("0.1", "0.2", "0.3"):
+            raise ValueError(
+                'a manifest declaring pre_registration must set schema_version "0.4" '
+                "(the D16.2 published-contract member)"
+            )
+        fs = self.feature_schema or {}
+        if not fs:
+            raise ValueError(
+                "pre_registration requires a feature_schema (the design is declared "
+                "over self-describing features — D16.1)"
+            )
+        for path in pr.features:
+            decl = fs.get(path)
+            if decl is None:
+                raise ValueError(f"pre_registration feature {path!r} is not in feature_schema")
+            if decl.comparison is None:
+                raise ValueError(
+                    f"pre_registration feature {path!r} declares no 'comparison' — "
+                    "the pre-registered envelope IS the feature's comparison; declare it there"
+                )
+        for key in pr.comparison_keys:
+            if key not in fs:
+                raise ValueError(
+                    f"pre_registration comparison_key {key!r} is not in feature_schema"
+                )
         return self
 
 

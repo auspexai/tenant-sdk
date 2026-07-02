@@ -309,8 +309,18 @@ def manifest_dict_from_config(
     if fs:
         manifest["feature_schema"] = fs
 
+    # ── v0_3 / D16.2: the pre-registered design ──────────────────────────────
+    # The toml [pre_registration] table maps straight onto the manifest member
+    # (mirrors PreRegistration); Manifest.model_validate checks the block
+    # references declared features carrying a comparison. The tenant signature +
+    # the coordinator's submit-time Rekor anchor make `design ≺ data` provable.
+    pr = cfg.raw.get("pre_registration")
+    if pr:
+        manifest["pre_registration"] = pr
+
     # schema_version bumps to the lowest version that covers the declared members,
     # so an existing config (none declared) stays a valid 0.1 manifest unchanged.
+    uses_v0_4 = "pre_registration" in manifest
     uses_v0_3 = "feature_schema" in manifest
     uses_v0_2 = (
         "expected_gguf_sha256" in model
@@ -318,5 +328,7 @@ def manifest_dict_from_config(
         or "inference_determinism" in manifest
         or "output_schema" in manifest
     )
-    manifest["schema_version"] = "0.3" if uses_v0_3 else ("0.2" if uses_v0_2 else "0.1")
+    manifest["schema_version"] = (
+        "0.4" if uses_v0_4 else ("0.3" if uses_v0_3 else ("0.2" if uses_v0_2 else "0.1"))
+    )
     return manifest
