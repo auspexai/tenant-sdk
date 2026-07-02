@@ -188,3 +188,18 @@ def verify_manifest(manifest: Manifest, signature: ManifestSignature) -> bool:
         return True
     except InvalidSignature:
         return False
+
+
+def canonical_deviation_bytes(manifest_hash: str, what_changed: str, why: str) -> bytes:
+    """D16.2-D (§5): the canonical deviation declaration the tenant signs —
+    the ORIGINAL design's manifest hash + what changed + why. KEEP IN LOCKSTEP
+    with the coordinator's `pre_registration.canonical_deviation_bytes` (the
+    manifest-signing convention applied to the deviation: sorted keys, compact
+    separators, utf-8)."""
+    import json as _json
+
+    return _json.dumps(
+        {"manifest_hash": manifest_hash, "what_changed": what_changed, "why": why},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")

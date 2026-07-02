@@ -560,6 +560,13 @@ def experiment_export(
             else ("ok" if v.design_precedes_data_ok else "FAIL")
         )
         click.echo(f"design<data: {ordering}")
+    if v.deviations_disclosed:
+        # D16.2-D: honest disclosure — deviations never fail a bundle; a record
+        # that fails to VERIFY does.
+        click.echo(
+            f"deviations:  {v.deviations_disclosed} declared "
+            f"({'records verify' if v.deviations_ok else 'RECORD FAILS TO VERIFY'})"
+        )
     ws = v.worker_signatures
     skipped = ws.skipped_aged_off + ws.skipped_missing_fields
     click.echo(
@@ -659,6 +666,46 @@ def _load_key(key_path: Path):
     except (FileNotFoundError, ValueError) as e:
         click.echo(f"ERROR: failed to load key from {key_path}: {e}", err=True)
         sys.exit(1)
+
+
+@experiment.command("deviate")
+@click.argument("target")
+@_coord_opt
+@_key_opt
+@click.option(
+    "--what",
+    "what_changed",
+    required=True,
+    help="What changed vs the pre-registered design (10-2000 chars).",
+)
+@click.option("--why", required=True, help="Why the analysis changed (10-2000 chars).")
+def experiment_deviate(
+    target: str, coordinator: str, key_path: Path, what_changed: str, why: str
+) -> None:
+    """Declare a DEVIATION from the pre-registered design (D16.2 §5).
+
+    An append-only, tenant-SIGNED record — never an edit of the original. The
+    coordinator anchors it in the public transparency log, so WHEN the analysis
+    changed is provable. Exploratory analysis is allowed and valuable; declaring
+    the deviation keeps it from masquerading as confirmatory. TARGET is an
+    exp- id, a tenant label, or 'latest'."""
+    from auspexai_tenant.experiment import Experiment
+
+    key = _load_key(key_path)
+    client = _make_client(coordinator, key_path)
+    exp_id, label = _resolve_experiment(client, target)
+    exp = Experiment(coordinator, key, exp_id)
+    try:
+        rec = _run(lambda: exp.declare_deviation(what_changed=what_changed, why=why))
+    except CoordinatorError as e:
+        click.echo(f"ERROR: {e}", err=True)
+        sys.exit(1)
+    click.echo(f"deviation recorded for {label} ({exp_id}): {rec['deviation_id']}")
+    click.echo(f"  declared_at: {rec['declared_at']}")
+    click.echo(
+        "  Rekor anchor: pending — lands on the hourly sweep; the record is already "
+        "signed + immutable."
+    )
 
 
 @experiment.command("build")
@@ -1705,6 +1752,13 @@ def bundle_verify(
             else ("ok" if v.design_precedes_data_ok else "FAIL")
         )
         click.echo(f"design<data: {ordering}")
+    if v.deviations_disclosed:
+        # D16.2-D: honest disclosure — deviations never fail a bundle; a record
+        # that fails to VERIFY does.
+        click.echo(
+            f"deviations:  {v.deviations_disclosed} declared "
+            f"({'records verify' if v.deviations_ok else 'RECORD FAILS TO VERIFY'})"
+        )
     ws = v.worker_signatures
     skipped = ws.skipped_aged_off + ws.skipped_missing_fields
     click.echo(

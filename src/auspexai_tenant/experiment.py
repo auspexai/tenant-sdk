@@ -149,6 +149,7 @@ class Experiment:
         client: httpx.Client | None = None,
     ) -> None:
         self._base = coordinator_url.rstrip("/")
+        self._key = key
         self._auth = Rfc9421Auth(key)
         self._timeout = timeout
         self._client = client
@@ -236,6 +237,33 @@ class Experiment:
         coordinator auto-completes once the last in-flight unit finishes — this is
         the autonomic loop's computed termination (design note §1, §3.2)."""
         return self._action("finalize-submissions")
+
+    def declare_deviation(self, *, what_changed: str, why: str) -> dict[str, Any]:
+        """D16.2-D (§5): declare an append-only deviation from the pre-registered
+        design — what changed and why, SIGNED by this tenant key over the
+        canonical declaration (the coordinator verifies it against the
+        authenticated caller and anchors the record in Rekor, so WHEN the
+        analysis changed is publicly provable). Never edits the original;
+        exploratory analysis is allowed — it just may not masquerade as
+        confirmatory. Raises CoordinatorError on refusal (e.g. the experiment
+        was never pre-registered)."""
+        from base64 import b64encode
+
+        from auspexai_tenant.signing import canonical_deviation_bytes
+
+        meta = self._metadata()
+        declaration = canonical_deviation_bytes(meta["manifest_hash"], what_changed, why)
+        resp = self._post(
+            f"/api/v0/experiments/{self.experiment_id}/pre-registration/deviations",
+            json={
+                "what_changed": what_changed,
+                "why": why,
+                "tenant_signature_b64": b64encode(self._key.sign(declaration)).decode(),
+            },
+        )
+        if resp.status_code != 201:
+            raise CoordinatorError(resp.status_code, resp.text)
+        return resp.json()
 
     def abort(self) -> dict[str, Any]:
         """Abort the experiment (`POST /actions/abort`)."""

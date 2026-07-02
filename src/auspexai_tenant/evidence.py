@@ -133,6 +133,15 @@ class BundleVerification:
     # backfill may not have run yet — pending is never a failure); False = the
     # design was anchored AFTER the results (retroactive pre-registration).
     design_precedes_data_ok: bool | None = None
+    # D16.2-D: deviation disclosure (§6 check 3). `deviations_disclosed` is the
+    # COUNT of declared deviations (0 = the pre-registered analysis stands;
+    # None = the bundle predates the member). `deviations_ok` verifies each
+    # record: the DECLARER's signature over the canonical declaration, the
+    # coordinator's anchor statement, and the binding to THIS bundle's manifest.
+    # Having deviations never fails a bundle — honest disclosure is the point;
+    # only a record that fails to VERIFY (tamper) does.
+    deviations_disclosed: int | None = None
+    deviations_ok: bool | None = None
     # C7 Inc 4: a within_cell_tolerance unit is ATTESTED by its deterministic
     # representative's hash (not a replica's), with the representative itself
     # shipped in the bundle's `unit_consensus` block. This check RECOMPUTES each
@@ -176,6 +185,7 @@ class BundleVerification:
             and self.tolerance_evidence_ok is not False
             and self.prereg_bound_ok is not False
             and self.design_precedes_data_ok is not False
+            and self.deviations_ok is not False
             and self.worker_signatures.ok
         )
 
@@ -290,6 +300,33 @@ _NOT_ANCHORED_UUID = "lab-mode-no-rekor"
 def _real_anchor(log_index: Any, entry_uuid: Any) -> bool:
     """A genuine Rekor anchor (not the pending/lab placeholder)."""
     return bool(log_index) and bool(entry_uuid) and entry_uuid != _NOT_ANCHORED_UUID
+
+
+def _verify_deviation(d: dict[str, Any], signed_manifest_hash: str | None) -> bool:
+    """One deviation record verifies iff: the DECLARER's Ed25519 signature holds
+    over the canonical declaration; the coordinator's COSE anchor statement
+    decodes and its predicate binds the declaration digest + the same manifest
+    hash; and the record references THIS bundle's custody-signed manifest."""
+    import hashlib as _hashlib
+
+    from auspexai_tenant.signing import canonical_deviation_bytes
+
+    try:
+        declaration = canonical_deviation_bytes(d["manifest_hash"], d["what_changed"], d["why"])
+        Ed25519PublicKey.from_public_bytes(bytes.fromhex(d["tenant_pubkey_hex"])).verify(
+            b64decode(d["tenant_signature_b64"]), declaration
+        )
+        valid, _signer, payload = _cose_verify(b64decode(d["cose_b64"]))
+        if not valid:
+            return False
+        predicate = cbor2.loads(cbor2.loads(payload)["predicate"])
+    except Exception:
+        return False
+    if predicate.get("declaration_sha256") != _hashlib.sha256(declaration).hexdigest():
+        return False
+    if predicate.get("manifest_hash") != d["manifest_hash"]:
+        return False
+    return not (signed_manifest_hash and d["manifest_hash"] != signed_manifest_hash)
 
 
 def _verify_prereg_binding(
@@ -522,6 +559,17 @@ def verify_bundle(
                 att_block_anchor["rekor_log_index"]
             )
 
+    # D16.2-D: deviation disclosure — count + per-record verification.
+    deviations_disclosed: int | None = None
+    deviations_ok: bool | None = None
+    devs = bundle.get("deviations")
+    if devs is not None:
+        deviations_disclosed = len(devs)
+        if devs:
+            deviations_ok = all(
+                isinstance(d, dict) and _verify_deviation(d, t.get("manifest_hash")) for d in devs
+            )
+
     # 7. D16.1: bind the embedded manifest to the SIGNED manifest_hash (covered
     # by the transfer signature). None when either is absent (pre-D16.1 bundle /
     # old coordinator); False = the manifest body was swapped — so its
@@ -547,6 +595,8 @@ def verify_bundle(
         tolerance_evidence_ok=tolerance_evidence,
         prereg_bound_ok=prereg_bound,
         design_precedes_data_ok=design_precedes_data,
+        deviations_disclosed=deviations_disclosed,
+        deviations_ok=deviations_ok,
     )
 
 
@@ -582,6 +632,8 @@ class BundleVerificationError(Exception):
             failed.append("pre-registration binding (anchor/signature/design mismatch)")
         if v.design_precedes_data_ok is False:
             failed.append("design ≺ data ordering (the design was anchored AFTER the results)")
+        if v.deviations_ok is False:
+            failed.append("deviation records (a declared deviation fails to verify)")
         if v.worker_signatures.failed:
             failed.append(f"worker signatures ({', '.join(v.worker_signatures.failed)})")
         if not v.worker_signatures.ok and not v.worker_signatures.failed:

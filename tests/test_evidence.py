@@ -718,3 +718,106 @@ def test_non_pre_registered_bundle_is_lenient():
     v = verify_bundle(_make_bundle(ck, wk))
     assert v.prereg_bound_ok is None and v.design_precedes_data_ok is None
     assert v.ok
+
+
+# ---- D16.2-D: deviation disclosure -------------------------------------------
+
+
+def _make_deviation(coordinator_key, tenant_key, manifest_hash, what, why):
+    """A bundle deviation record signed exactly as the coordinator + tenant do."""
+    from auspexai_tenant.signing import canonical_deviation_bytes
+
+    declaration = canonical_deviation_bytes(manifest_hash, what, why)
+    tenant_sig = b64encode(tenant_key.sign(declaration)).decode()
+    predicate = cbor2.dumps(
+        {
+            "experiment_id": "exp-label",
+            "tenant_id": "tenant-a",
+            "manifest_hash": manifest_hash,
+            "declaration_sha256": hashlib.sha256(declaration).hexdigest(),
+            "tenant_pubkey_hex": _pub_hex(tenant_key),
+            "tenant_signature_b64": tenant_sig,
+            "declared_at": "2026-06-12T00:00:00+00:00",
+        },
+        canonical=True,
+    )
+    stmt = cbor2.dumps(
+        {
+            "_type": "https://www.in-toto.io/Statement/v1",
+            "subject": [
+                {
+                    "name": "auspexai:pre-registration-deviation/dev-1",
+                    "digest": {"sha256": hashlib.sha256(predicate).hexdigest()},
+                }
+            ],
+            "predicateType": "https://auspexai.network/pre-registration-deviation/v0",
+            "predicate": predicate,
+        },
+        canonical=True,
+    )
+    protected = cbor2.dumps(
+        {_ALG: _EDDSA, _KID: _pub_hex(coordinator_key).encode("ascii")}, canonical=True
+    )
+    sig = coordinator_key.sign(cbor2.dumps(["Signature1", protected, b"", stmt], canonical=True))
+    cose = cbor2.dumps([protected, {}, stmt, sig], canonical=True)
+    return {
+        "deviation_id": "dev-1",
+        "manifest_hash": manifest_hash,
+        "what_changed": what,
+        "why": why,
+        "tenant_pubkey_hex": _pub_hex(tenant_key),
+        "tenant_signature_b64": tenant_sig,
+        "declared_at": "2026-06-12T00:00:00+00:00",
+        "cose_b64": b64encode(cose).decode(),
+        "signing_key_pubkey_hex": _pub_hex(coordinator_key),
+        "rekor_log_index": 0,
+        "rekor_entry_uuid": "lab-mode-no-rekor",
+        "rekor_inclusion_proof": None,
+    }
+
+
+def test_deviations_disclosed_and_verify():
+    """Declared deviations surface (count) and verify — and never fail a bundle
+    (honest disclosure is the point)."""
+    ck, wk = _keys()
+    tenant_key, _ = _keys()
+    bundle = _make_bundle(ck, wk, pre_registered=True)
+    mh = bundle["manifest_hash"]
+    bundle["deviations"] = [
+        _make_deviation(ck, tenant_key, mh, "widened the envelope post-hoc", "band effect emerged")
+    ]
+    v = verify_bundle(bundle)
+    assert v.deviations_disclosed == 1 and v.deviations_ok is True
+    assert v.ok
+
+
+def test_tampered_deviation_fails():
+    """Editing a declared deviation's text after the fact breaks the declarer's
+    signature — append-only means tamper is visible."""
+    ck, wk = _keys()
+    tenant_key, _ = _keys()
+    bundle = _make_bundle(ck, wk, pre_registered=True)
+    dev = _make_deviation(
+        ck, tenant_key, bundle["manifest_hash"], "widened the envelope post-hoc", "band effect"
+    )
+    dev["why"] = "a nicer-sounding reason, edited later"
+    bundle["deviations"] = [dev]
+    v = verify_bundle(bundle)
+    assert v.deviations_ok is False
+    assert not v.ok
+
+
+def test_empty_deviations_is_clean_zero():
+    ck, wk = _keys()
+    bundle = _make_bundle(ck, wk, pre_registered=True)
+    bundle["deviations"] = []
+    v = verify_bundle(bundle)
+    assert v.deviations_disclosed == 0 and v.deviations_ok is None
+    assert v.ok
+
+
+def test_absent_deviations_member_is_lenient():
+    ck, wk = _keys()
+    v = verify_bundle(_make_bundle(ck, wk))
+    assert v.deviations_disclosed is None and v.deviations_ok is None
+    assert v.ok
