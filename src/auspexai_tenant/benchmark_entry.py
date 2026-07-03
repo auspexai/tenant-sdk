@@ -25,13 +25,13 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 ENTRY_SCHEMA = "auspexai-benchmark-entry/v0"
 
 
-def _canonical_entry_bytes(entry: dict[str, Any]) -> bytes:
-    """The signed body: the entry WITHOUT the signature itself (the publisher
-    pubkey IS signed — the key identity is part of the claim), canonical
-    JSON (sorted keys, tight separators) — the same convention every other
-    signed surface in the platform uses."""
-    body = {k: v for k, v in entry.items() if k != "signature_b64"}
-    return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+def _canonical_payload_bytes(payload: dict[str, Any]) -> bytes:
+    """Canonical JSON (sorted keys, tight separators). The signature covers
+    these exact BYTES, and every verifier — SDK and the board page's
+    in-browser check — verifies and renders from them: the entry envelope
+    carries the bytes base64'd, which sidesteps every cross-language
+    canonical-JSON trap (float formatting, unicode escaping, key order)."""
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
 def _attestation_anchor(bundle: dict[str, Any]) -> dict[str, Any]:
@@ -57,9 +57,10 @@ def build_entry(
     verified both bundles (the CLI does) — this function only assembles
     and signs the claim."""
     rep = record.get("report") or {}
-    entry: dict[str, Any] = {
+    payload: dict[str, Any] = {
         "schema": ENTRY_SCHEMA,
         "published_at": datetime.now(UTC).isoformat(),
+        "publisher_pubkey_hex": key.pubkey_hex,
         "tenant_id": tenant_id,
         "observation": {
             **(record.get("observation") or {}),
@@ -91,18 +92,30 @@ def build_entry(
             ],
         },
     }
-    entry["publisher_pubkey_hex"] = key.pubkey_hex
-    entry["signature_b64"] = b64encode(key.sign(_canonical_entry_bytes(entry))).decode()
-    return entry
+    body = _canonical_payload_bytes(payload)
+    return {
+        "schema": ENTRY_SCHEMA,
+        "payload_b64": b64encode(body).decode(),
+        "publisher_pubkey_hex": key.pubkey_hex,
+        "signature_b64": b64encode(key.sign(body)).decode(),
+    }
 
 
-def verify_entry(entry: dict[str, Any]) -> bool:
-    """True iff the entry's Ed25519 signature verifies over its canonical body
-    with the embedded publisher pubkey. (Grounding that pubkey to a real
-    tenant is the CURATOR's job at registry-inclusion time.)"""
+def verify_entry(entry: dict[str, Any]) -> dict[str, Any] | None:
+    """The verified PAYLOAD (parsed from the exact signed bytes), or None.
+    The envelope pubkey must equal the pubkey INSIDE the signed payload (the
+    key identity is part of the claim — no swap possible). Grounding that
+    pubkey to a real tenant is the CURATOR's job at registry-inclusion time.
+    Callers render/consume ONLY the returned payload, never envelope mirrors."""
     try:
+        body = b64decode(entry["payload_b64"])
         pub = Ed25519PublicKey.from_public_bytes(bytes.fromhex(entry["publisher_pubkey_hex"]))
-        pub.verify(b64decode(entry["signature_b64"]), _canonical_entry_bytes(entry))
-        return True
+        pub.verify(b64decode(entry["signature_b64"]), body)
+        payload = json.loads(body)
+        if payload.get("publisher_pubkey_hex") != entry["publisher_pubkey_hex"]:
+            return None
+        if payload.get("schema") != ENTRY_SCHEMA:
+            return None
+        return payload
     except (InvalidSignature, KeyError, ValueError, TypeError):
-        return False
+        return None

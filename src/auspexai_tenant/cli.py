@@ -1592,10 +1592,11 @@ def benchmark_publish(
         tenant_id=(obs_bundle.get("manifest") or {}).get("tenant_id"),
         key=key,
     )
-    assert verify_entry(entry)
+    payload = verify_entry(entry)
+    assert payload is not None
     out = layout.dir / f"benchmark_entry_{ref_id}.json"
     out.write_text(json.dumps(entry, indent=2))
-    peak = entry["report"]["peak_eu"]
+    peak = payload["report"]["peak_eu"]
     click.echo(f"signed entry: peak {peak} EU vs {ref_id}")
     click.echo(f"written: {out}")
     click.echo(
@@ -1611,10 +1612,12 @@ def benchmark_verify_entry(entry_file: Path) -> None:
     from auspexai_tenant.benchmark_entry import verify_entry
 
     entry = json.loads(entry_file.read_text())
-    if verify_entry(entry):
+    payload = verify_entry(entry)
+    if payload is not None:
         click.echo(
-            f"OK: signature valid (publisher {entry.get('publisher_pubkey_hex', '')[:16]}…, "
-            f"peak {entry.get('report', {}).get('peak_eu')} EU)"
+            f"OK: signature valid (publisher {payload.get('publisher_pubkey_hex', '')[:16]}…, "
+            f"peak {payload.get('report', {}).get('peak_eu')} EU vs "
+            f"{payload.get('reference', {}).get('experiment_id')})"
         )
     else:
         click.echo("FAILED: signature invalid or entry malformed", err=True)

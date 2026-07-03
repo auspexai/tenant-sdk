@@ -440,9 +440,14 @@ def test_registry_entry_signs_and_verifies_and_tamper_fails():
         tenant_id="vigiles-lab",
         key=_Key(),
     )
-    assert verify_entry(entry)
-    assert entry["observation"]["attestation"]["rekor_log_index"] == 123
-    tampered = {**entry, "report": {**entry["report"], "peak_eu": 0.1}}
-    assert not verify_entry(tampered)
-    swapped = {**entry, "publisher_pubkey_hex": "ab" * 32}
-    assert not verify_entry(swapped)
+    payload = verify_entry(entry)
+    assert payload is not None
+    assert payload["observation"]["attestation"]["rekor_log_index"] == 123
+    assert payload["report"]["peak_eu"] == 10.0
+    # Tampering with the signed bytes breaks it.
+    import base64 as _b64
+
+    body = _b64.b64decode(entry["payload_b64"]).replace(b"10.0", b"0.1")
+    assert verify_entry({**entry, "payload_b64": _b64.b64encode(body).decode()}) is None
+    # Envelope-pubkey swap breaks it (the key identity is INSIDE the payload).
+    assert verify_entry({**entry, "publisher_pubkey_hex": "ab" * 32}) is None
