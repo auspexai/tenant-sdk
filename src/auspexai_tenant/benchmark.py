@@ -348,6 +348,23 @@ def drift_benchmark_bundles(
     ref, ref_schema = observations_from_bundle(reference_bundle)
     schema = ref_schema or obs_schema
     report = drift_benchmark(obs, ref, schema, key_feature=key_feature)
+    empty_notes = tuple(
+        f"the {label} bundle carries no consensus results — every unit diverged "
+        "(0-receipt) or its payloads aged off; there is nothing custody-verified "
+        "to score. (An observe-only run — reducer builtin_process_only — makes "
+        "every replica consensus-grade and exportable.)"
+        for label, rows in (("observation", obs), ("reference", ref))
+        if not rows
+    )
+    if empty_notes:
+        report = DriftBenchmark(
+            probes=report.probes,
+            peak_eu=report.peak_eu,
+            breadth=report.breadth,
+            byte_divergence_rate=report.byte_divergence_rate,
+            key_feature=report.key_feature,
+            notes=(*report.notes, *empty_notes),
+        )
     if ref_schema and obs_schema and ref_schema != obs_schema:
         report = DriftBenchmark(
             probes=report.probes,

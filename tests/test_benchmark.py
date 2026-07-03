@@ -210,3 +210,14 @@ def test_report_round_trips_to_dict():
     d = drift_benchmark(obs, ref, SCHEMA).to_dict()
     assert isinstance(d["probes"][0]["features"], list)
     assert isinstance(DriftBenchmark(**{}) if False else d["peak_eu"], float)
+
+
+def test_empty_bundle_side_is_named_not_silent():
+    # The Qwen-contrast lesson (2026-07-03): an all-diverged experiment exports
+    # ZERO consensus results — the benchmark must say why there is nothing to
+    # score, not just print n/a.
+    empty = {"manifest": {"feature_schema": SCHEMA}, "consensus_results": []}
+    ref_b = _bundle([_obs("p-a", "h1", 0.9, 20, [["x", 1]])])
+    r = drift_benchmark_bundles(empty, ref_b)
+    assert r.peak_eu is None
+    assert any("no consensus results" in n for n in r.notes)
