@@ -208,3 +208,32 @@ df[df["output.<col>.valid"] != False]                 # interpretable rows only
 ```
 
 **See also:** [`reading_your_evidence.md`](reading_your_evidence.md) — verification, corroboration (`integrity_basis`), the apparatus footprint, and citing the Rekor anchor. Read both: that guide tells you *how much to trust* each row; this one tells you *what each row means.*
+
+## The Drift Benchmark — one comparable number (envelope units)
+
+*(The ratified standard for communicating drift — `drift_benchmark_design.md`.)*
+
+Your features are deliberately orthogonal, so no single raw metric is "the
+drift number." The benchmark makes them comparable by dividing each declared
+scalar comparison's delta by **its own calibrated envelope** (the same
+`comparison` your manifest declares and consensus enforces):
+
+- **1.0 envelope units (EU)** = the calibrated boundary between same-behavior
+  noise and drift. Below 1 is noise; above 1 the behavior moved.
+- **Headline = peak + breadth**: the worst probe's EU, plus the fraction of
+  probes beyond 1 EU (one drifted probe reads differently from a panel-wide
+  shift). When only one number fits, quote the peak.
+- **Byte divergence is reported separately, never folded in** — byte-different
+  outputs can be behaviorally identical (and features can be blind where the
+  byte anchor is not).
+- **Always name your reference**: a score is *against* a specific reference
+  experiment, whose signed manifest defines the envelope in force.
+
+```bash
+auspexai-tenant benchmark drift runs/<label>/bundle.json runs/<reference>/bundle.json
+```
+
+Both inputs are verified evidence bundles (custody + attestation checks run
+first). Calibration anchors for intuition, from production data: same
+config re-run ≈ 0 EU · seeded sampling (temp 0.8) ≈ 6.7 EU on the open-ended
+probe only · a different model ≈ 10 EU panel-wide.

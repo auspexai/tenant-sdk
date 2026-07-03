@@ -219,6 +219,26 @@ class BuiltinToleranceReducer(BaseModel):
     tolerance_features: Annotated[list[str], Field(min_length=1)] | None = None
 
 
+class BuiltinProcessOnlyReducer(BaseModel):
+    """C17 / v0.6 `builtin_process_only` — the OBSERVE-ONLY collection mode
+    (process_only_reducer_and_provenance_v0_6_design.md, RATIFIED 2026-07-03).
+
+    No cross-replica agreement is ever claimed: every collected replica is an
+    independent, valid OBSERVATION (each earns a receipt corroborating only
+    itself → integrity basis `process_only` at ANY replica count). This is the
+    declarable §3c non-agreement mode — the honest default for seeded-sampling
+    and distributional designs (refusal/harm rates over N samples,
+    self-consistency, the eval-sweep archetype), at any trust tier and any
+    replication. Nothing is ever an outlier and nothing is ever `diverged`;
+    the attestation leaf binds a deterministic representative (lexicographic-
+    first observation hash — explicitly NOT a consensus claim) with the full
+    observation set in the signed evidence block."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["builtin_process_only"]
+
+
 class CustomReducer(BaseModel):
     """Tenant-supplied reducer: forked by the coordinator in a subprocess.
 
@@ -233,9 +253,27 @@ class CustomReducer(BaseModel):
 
 
 Reducer = Annotated[
-    BuiltinReducer | BuiltinToleranceReducer | CustomReducer,
+    BuiltinReducer | BuiltinToleranceReducer | BuiltinProcessOnlyReducer | CustomReducer,
     Field(discriminator="kind"),
 ]
+
+
+class ConfigProvenance(BaseModel):
+    """D17 fix #2 / v0.6: HOW this experiment was configured — stamped by the
+    SDK at `experiment build`, never hand-written. Descriptive, not enforced
+    (declared so: no gate reads it — its named readers are the D16.2 verify
+    chain/bundle, which already content-address and anchor the manifest it
+    rides in, plus the dashboard's experiment detail). `resolved_config_sha256`
+    hashes the RESOLVED (post-profile-merge) config, so the driver knobs that
+    never become manifest fields are inside the fingerprint; `git_dirty` is the
+    honesty bit — a build from an uncommitted tree is visible, not policed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    profile: str | None = None  # the active [profiles.<name>]; absent = base
+    resolved_config_sha256: Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
+    git_commit: Annotated[str | None, Field(pattern=r"^[a-f0-9]{7,40}$")] = None
+    git_dirty: bool | None = None
 
 
 ResearchClass = Literal[
@@ -428,14 +466,16 @@ class PreRegistration(BaseModel):
 
 
 class Manifest(BaseModel):
-    """AuspexAI tenant manifest, v0.1 through v0.5.
+    """AuspexAI tenant manifest, v0.1 through v0.6.
 
-    Mirrors schemas/manifest_v0_1.json … v0_5.json. Each version is a superset
+    Mirrors schemas/manifest_v0_1.json … v0_6.json. Each version is a superset
     of the prior, enforcement keyed on PRESENCE: v0.2 adds four optional members
     (M1-M4); v0.3 adds the optional `feature_schema` (D16.1); v0.4 adds the
     optional `pre_registration` (D16.2); v0.5 extends `inference_determinism`
-    with the seeded-sampling whitelist (top_p/top_k/min_p — memo Q2). Older
-    versions stay valid forever (re-verify-forever, no forced migration). See
+    with the seeded-sampling whitelist (top_p/top_k/min_p — memo Q2); v0.6 adds
+    the `builtin_process_only` observe-only reducer (C17) + the SDK-stamped
+    `config_provenance` block (D17). Older versions stay valid forever
+    (re-verify-forever, no forced migration). See
     sdk_license_boundary_position.md §6.2 for the published-contract framing.
     """
 
@@ -445,7 +485,7 @@ class Manifest(BaseModel):
     # Every superset member is OPTIONAL — enforcement keys on PRESENCE, so a
     # manifest declaring none of a version's members is structurally the prior
     # version with schema_version bumped.
-    schema_version: Literal["0.1", "0.2", "0.3", "0.4", "0.5"]
+    schema_version: Literal["0.1", "0.2", "0.3", "0.4", "0.5", "0.6"]
     tenant_id: Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]{2,63}$")]
     tenant_maintainer_contact: EmailStr
     experiment_id: Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]{2,127}$")]
@@ -481,6 +521,9 @@ class Manifest(BaseModel):
     # v0_4 / D16.2 — the pre-registered design. Optional (exploratory runs);
     # required for a citable/DOI'd result. See preregistration_design.md.
     pre_registration: PreRegistration | None = None
+    # v0_6 / D17 — how this experiment was configured (SDK-stamped at build;
+    # descriptive, not enforced — see the model's docstring).
+    config_provenance: ConfigProvenance | None = None
 
     @model_validator(mode="after")
     def _sampling_coherent_with_reducer(self) -> Manifest:
@@ -513,13 +556,37 @@ class Manifest(BaseModel):
     @model_validator(mode="after")
     def _sampling_knobs_require_v0_5(self) -> Manifest:
         """The top_p/top_k/min_p whitelist is a v0.5 contract extension — the
-        published v0.2-v0.4 schema artifacts are immutable and do not carry it."""
+        published v0.2-v0.4 schema artifacts are immutable and do not carry it.
+        Blacklist form: every later superset version (0.6+) carries it too."""
         det = self.inference_determinism
-        if det is not None and det.sampling_knobs and self.schema_version != "0.5":
+        if (
+            det is not None
+            and det.sampling_knobs
+            and self.schema_version in ("0.1", "0.2", "0.3", "0.4")
+        ):
             raise ValueError(
                 f"sampling knobs {sorted(det.sampling_knobs)} require schema_version "
-                '"0.5" (the published v0.2-v0.4 schemas are immutable and do not '
-                "carry them)"
+                '"0.5" or later (the published v0.2-v0.4 schemas are immutable and '
+                "do not carry them)"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _v0_6_members_require_v0_6(self) -> Manifest:
+        """The observe-only reducer + config provenance are v0.6 contract
+        extensions — the published v0.1-v0.5 artifacts are immutable and do not
+        carry them. Blacklist form, like the members before them."""
+        pre_v0_6 = self.schema_version in ("0.1", "0.2", "0.3", "0.4", "0.5")
+        if pre_v0_6 and self.reducer.kind == "builtin_process_only":
+            raise ValueError(
+                'the builtin_process_only reducer requires schema_version "0.6" or '
+                "later (the published v0.1-v0.5 schemas are immutable and do not "
+                "carry it)"
+            )
+        if pre_v0_6 and self.config_provenance is not None:
+            raise ValueError(
+                'config_provenance requires schema_version "0.6" or later (the '
+                "published v0.1-v0.5 schemas are immutable and do not carry it)"
             )
         return self
 

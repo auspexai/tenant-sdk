@@ -17,6 +17,7 @@ env-var one-liners for a terminal/clipboard to mangle
 
 from __future__ import annotations
 
+import json
 import tomllib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -330,22 +331,55 @@ def manifest_dict_from_config(
     if pr:
         manifest["pre_registration"] = pr
 
-    # schema_version bumps to the lowest version that covers the declared members,
-    # so an existing config (none declared) stays a valid 0.1 manifest unchanged.
-    uses_v0_5 = any(
-        k in manifest.get("inference_determinism", {}) for k in ("top_p", "top_k", "min_p")
-    )
-    uses_v0_4 = "pre_registration" in manifest
-    uses_v0_3 = "feature_schema" in manifest
-    uses_v0_2 = (
-        "expected_gguf_sha256" in model
-        or "requires_real_execution" in manifest
-        or "inference_determinism" in manifest
-        or "output_schema" in manifest
-    )
-    manifest["schema_version"] = (
-        "0.5"
-        if uses_v0_5
-        else ("0.4" if uses_v0_4 else ("0.3" if uses_v0_3 else ("0.2" if uses_v0_2 else "0.1")))
-    )
+    # ── v0_6 / D17: config provenance — ALWAYS stamped at build (ratified Q1).
+    # HOW this experiment was configured: the active profile, a fingerprint of
+    # the RESOLVED (post-profile-merge) config (the driver knobs are inside the
+    # hash even though they never become manifest fields), and the tenant repo's
+    # commit + dirty bit (best-effort; absent outside a git tree). Descriptive,
+    # never enforced — its readers are the D16.2 verify chain/bundle + the
+    # dashboard. Every toml-built manifest is therefore v0.6+.
+    manifest["config_provenance"] = _config_provenance(cfg)
+
+    # schema_version bumps to the lowest version that covers the declared
+    # members. Provenance stamping (above) floors every BUILT manifest at 0.6;
+    # hand-written manifests at older versions stay valid forever (the model).
+    manifest["schema_version"] = "0.6"
     return manifest
+
+
+def _config_provenance(cfg: ExperimentConfig) -> dict[str, Any]:
+    """The D17 provenance block. Pure over `cfg.raw` (already profile-resolved
+    by `load_experiment_config`); git fields are best-effort and never fail the
+    build (no git / not a repo / git errors ⇒ fields absent)."""
+    import hashlib
+    import subprocess
+
+    canonical = json.dumps(cfg.raw, sort_keys=True, separators=(",", ":"), default=str)
+    out: dict[str, Any] = {
+        "resolved_config_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+    }
+    if cfg.active_profile:
+        out["profile"] = cfg.active_profile
+    if cfg.source_path is not None:
+        repo_dir = str(cfg.source_path.parent)
+        try:
+            commit = subprocess.run(
+                ["git", "-C", repo_dir, "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=True,
+            ).stdout.strip()
+            if commit:
+                out["git_commit"] = commit
+                status = subprocess.run(
+                    ["git", "-C", repo_dir, "status", "--porcelain"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=True,
+                ).stdout
+                out["git_dirty"] = bool(status.strip())
+        except (OSError, subprocess.SubprocessError):
+            pass  # not a repo / no git — provenance stays config-hash-only
+    return out

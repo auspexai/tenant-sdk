@@ -158,14 +158,14 @@ _BASE_EXP = {
 }
 
 
-def test_build_maps_sampling_knobs_and_bumps_to_0_5():
+def test_build_maps_sampling_knobs():
     cfg = _cfg(
         _BASE_EXP,
         determinism={"temperature": 0.7, "seed": 7, "top_p": 0.9, "top_k": 40},
         reducer={"kind": "custom", "command": ["python", "fold.py"]},
     )
     m = manifest_dict_from_config(cfg, package_sha256="ab" * 32, label="lab-s")
-    assert m["schema_version"] == "0.5"
+    assert m["schema_version"] == "0.6"
     assert m["inference_determinism"] == {
         "temperature": 0.7,
         "seed": 7,
@@ -175,8 +175,8 @@ def test_build_maps_sampling_knobs_and_bumps_to_0_5():
     Manifest.model_validate(m)
 
 
-def test_build_greedy_determinism_stays_0_2():
+def test_build_greedy_determinism_maps():
     cfg = _cfg(_BASE_EXP, determinism={"temperature": 0.0, "seed": 7})
     m = manifest_dict_from_config(cfg, package_sha256="ab" * 32, label="lab-g")
-    assert m["schema_version"] == "0.2"
+    assert m["schema_version"] == "0.6"
     Manifest.model_validate(m)

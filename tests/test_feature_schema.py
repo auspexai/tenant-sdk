@@ -291,15 +291,15 @@ def _cfg(experiment: dict, **tables) -> ExperimentConfig:
     return ExperimentConfig(experiment=experiment, raw=raw)
 
 
-def test_build_maps_feature_schema_and_bumps_to_0_3() -> None:
+def test_build_maps_feature_schema() -> None:
     cfg = _cfg(_BASE_EXP, feature_schema=VIGILES_FEATURE_SCHEMA)
     m = manifest_dict_from_config(cfg, package_sha256="ab" * 32, label="lab-z")
-    assert m["schema_version"] == "0.3"
+    assert m["schema_version"] == "0.6"
     assert m["feature_schema"]["response_sha256"]["role"] == "anchor"
     Manifest.model_validate(m)  # the built 0.3 manifest is valid end-to-end
 
 
-def test_build_no_feature_schema_does_not_bump_to_0_3() -> None:
+def test_build_no_feature_schema_omits_member() -> None:
     m = manifest_dict_from_config(_cfg(_BASE_EXP), package_sha256="ab" * 32, label="lab-x")
-    assert m["schema_version"] == "0.1"
+    assert m["schema_version"] == "0.6"
     assert "feature_schema" not in m

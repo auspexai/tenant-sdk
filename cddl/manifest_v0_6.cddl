@@ -1,0 +1,200 @@
+; AuspexAI Tenant Manifest schema, v0.6
+;
+; This CDDL definition is normative for the v0.6 AuspexAI manifest format. The
+; JSON Schema in schemas/manifest_v0_6.json mirrors it for JSON-tooling
+; ergonomics, but the CDDL is the authoritative spec for receipt-format
+; cross-references.
+;
+; v0.6 is a SUPERSET of v0.5 adding TWO members
+; (process_only_reducer_and_provenance_v0_6_design.md, RATIFIED 2026-07-03).
+; Enforcement keys on presence; v0.1 through v0.5 manifests stay valid forever
+; (no forced migration; re-verify-forever).
+;
+;   C17  builtin_process_only  — the OBSERVE-ONLY reducer: no cross-replica
+;        agreement is ever claimed; every collected replica is an independent,
+;        valid observation (each receipt corroborates only itself → integrity
+;        basis process_only at ANY replica count). The declarable §3c
+;        non-agreement collection mode: seeded-sampling and distributional
+;        designs (eval sweeps, self-consistency, refusal rates over N samples)
+;        become expressible at any trust tier and any replication. The
+;        attestation leaf binds a deterministic representative (lexicographic-
+;        first observation hash — NOT a consensus claim); the signed evidence
+;        block carries the full observation set.
+;   D17  config_provenance     — HOW the experiment was configured, SDK-stamped
+;        at build (active profile · sha256 of the RESOLVED post-profile-merge
+;        config · git commit + dirty bit). DESCRIPTIVE, NOT ENFORCED — declared
+;        so: no gate reads it; its readers are the D16.2 verify chain/bundle
+;        (which content-address and anchor the manifest it rides in) and the
+;        researcher dashboard.
+;
+; Per Principles & Scope §11 (schema-versioning policy), this file is immutable
+; once published. Major version bumps require an ADR; a minor superset bump
+; (a new optional member, like 0.1→0.2 and 0.2→0.3) does not.
+
+manifest = {
+  schema_version: "0.6",
+  tenant_id: tstr .regexp "^[a-z][a-z0-9-]{2,63}$",
+  tenant_maintainer_contact: tstr,
+  experiment_id: tstr .regexp "^[a-z][a-z0-9-]{2,127}$",
+  research_goal_paragraph: tstr,
+  ? research_class: research_class,   ; §9 #48 class-by-tier auto-approval
+  models: [+ model],
+  prompt_set_characteristics: tstr,
+  sensitive_content_flags: [* sensitive_flag],
+  ? approver_attestations: [+ attestation],
+  expected_duration_hours: number,
+  replication_factor: uint .gt 0,
+  work_unit_source: work_unit_source,
+  executor: executor,
+  reducer: reducer,
+  ? requires_real_execution: bool,            ; M2
+  ? inference_determinism: inference_determinism,  ; M1
+  ? output_schema: output_schema,             ; M4
+  ? feature_schema: feature_schema,           ; D16.1
+  ? pre_registration: pre_registration,       ; D16.2
+  ? config_provenance: config_provenance,     ; D17 (SDK-stamped; descriptive)
+}
+
+model = {
+  id: tstr,
+  version: tstr,
+  local_weights_required: bool,
+  ? hf_repo: tstr,                ; M3-acquire: optional HuggingFace repo
+  ? hf_filename: tstr,            ; M3-acquire: optional exact pinned GGUF file
+  ? expected_gguf_sha256: tstr .regexp "^[a-f0-9]{64}$",  ; M3 / #13b: served-weights pin
+}
+
+research_class = "behavioral_drift" / "eval_sweeps" / "refusal_boundary_mapping"
+  / "cross_model_comparison" / "quantization_effects" / "prompt_sensitivity" / "other"
+
+; Semantic rules (validated by the SDK model + mirrored at coordinator submit;
+; CDDL cannot express cross-field conditions):
+;   - temperature > 0 (seeded-sampling) REQUIRES seed.
+;   - top_p / top_k / min_p REQUIRE temperature > 0 (greedy never reads them).
+inference_determinism = {
+  ? temperature: number .ge 0,
+  ? seed: int,
+  ? serving_version_pin: tstr,    ; e.g. "ollama/0.17.7" — serve a match or refuse
+  ? hardware_class: tstr,         ; e.g. "cpu" / "cuda"
+  ? top_p: number,                ; v0.5 sampling knob, (0,1]
+  ? top_k: uint .gt 0,            ; v0.5 sampling knob
+  ? min_p: number,                ; v0.5 sampling knob, [0,1)
+}
+
+output_schema = {
+  measurement_level: "nominal" / "ordinal" / "interval" / "ratio",
+  ? shape: [* uint],             ; [] scalar / [N] vector / [R,C] matrix
+  ? dtype: tstr,                 ; e.g. "float32" / "int" / "string"
+}
+
+; D16.1 — keyed by the dotted result-payload path the executor emits.
+feature_schema = { * tstr => feature_declaration }
+
+feature_declaration = {
+  meaning: tstr,                  ; human-readable description
+  kind: feature_kind,            ; the §7-safe measurement type (NO free-text kind)
+  role: feature_role,            ; feature authority
+  change_means: tstr,            ; what a change in this feature implies
+  ? unit: tstr,
+  ? range: feature_range,        ; REQUIRED for numeric (a bounded measure)
+  ? categories: [+ tstr],        ; REQUIRED for categorical/ordinal (a CLOSED set)
+  ? algorithm: tstr,             ; REQUIRED for hash (e.g. "sha256")
+  ? element_kind: set_element_kind,   ; REQUIRED for set
+  ? max_cardinality: uint .gt 0,      ; REQUIRED for set
+  ? invariant_to: [* tstr],      ; declared blind spots (e.g. token_order, whitespace)
+  ? valid_when: valid_when,      ; structured validity predicate
+  ? comparison: feature_comparison,   ; the C7 tolerance envelope
+}
+
+feature_kind = "hash" / "count" / "numeric" / "categorical" / "ordinal" / "set"
+feature_role = "anchor" / "summary" / "provenance" / "key" / "diagnostic"
+set_element_kind = "categorical" / "numeric" / "count" / "hash"
+
+feature_range = {
+  min: number,
+  ? max: number,                 ; omitted ⇒ unbounded above (a count)
+}
+
+valid_when = {
+  field: tstr,
+  op: ">=" / "<=" / ">" / "<" / "==" / "!=",
+  value: number / tstr,
+}
+
+feature_comparison = {
+  rule: "exact" / "numeric" / "set_jaccard" / "categorical_exact",
+  ? rel: number,                 ; numeric: relative tolerance
+  ? abs: number,                 ; numeric: absolute tolerance
+  ? min: number,                 ; set_jaccard: minimum similarity in [0,1]
+}
+
+sensitive_flag = "dual_use" / "red_team" / "harmful_output_generation"
+
+attestation = {
+  approver_pubkey: tstr,
+  sig: tstr,
+}
+
+work_unit_source = static_source / http_source
+
+static_source = {
+  kind: "static",
+  tarball_sha256: tstr .regexp "^[a-f0-9]{64}$",
+}
+
+http_source = {
+  kind: "http",
+  url: tstr,
+}
+
+executor = {
+  command: [+ tstr],
+  ? image_sha256: tstr,
+  ? package_sha256: tstr,
+}
+
+reducer = builtin_reducer / tolerance_reducer / process_only_reducer / custom_reducer
+
+builtin_reducer = {
+  kind: "builtin_hash_agreement",
+}
+
+tolerance_reducer = {
+  kind: "builtin_within_cell_tolerance",
+  ? tolerance_features: [+ tstr],
+}
+
+; C17: observe-only — every replica an independent observation (see header).
+process_only_reducer = {
+  kind: "builtin_process_only",
+}
+
+custom_reducer = {
+  kind: "custom",
+  command: [+ tstr],
+  ? image_sha256: tstr,
+}
+
+; D17 — SDK-stamped build provenance (descriptive, never enforced).
+config_provenance = {
+  ? profile: tstr,                    ; the active [profiles.<name>]; absent = base
+  resolved_config_sha256: tstr .regexp "^[a-f0-9]{64}$",
+  ? git_commit: tstr .regexp "^[a-f0-9]{7,40}$",
+  ? git_dirty: bool,                  ; built from an uncommitted tree
+}
+
+; D16.2 — the pre-registered design (preregistration_design.md §3). §7-safe:
+; describes the DESIGN over declared features, never raw output. A post-hoc
+; analysis change is a signed, append-only deviation record, never an edit.
+pre_registration = {
+  ? version: "0.1",
+  hypothesis: tstr .size (20..2000),
+  analysis_method: tstr .size (10..2000),
+  features: [+ tstr],                ; declared feature_schema paths, each with a comparison
+  timescale: "intra_experiment_rounds" / "long_horizon" / "inter_experiment",
+  decision_rule: tstr .size (10..2000),
+  expected_result: tstr .size (5..2000),
+  stopping_rule: tstr .size (10..1000),   ; declared up front — never data-peeking-dependent
+  ? comparison_keys: [* tstr],       ; stable join keys; must be declared features
+  ? min_replication: uint .gt 0,     ; optional power declaration
+}

@@ -99,9 +99,12 @@ _BASE_EXP = {
 }
 
 
-def test_build_no_members_stays_0_1():
+def test_build_no_members_still_stamps_provenance():
+    # D17 (ratified 2026-07-03): EVERY build stamps config_provenance, so a
+    # built manifest floors at 0.6 even with no other members declared.
     m = manifest_dict_from_config(_cfg(_BASE_EXP), package_sha256="ab" * 32, label="lab-x")
-    assert m["schema_version"] == "0.1"
+    assert m["schema_version"] == "0.6"
+    assert "resolved_config_sha256" in m["config_provenance"]
     assert "inference_determinism" not in m
     Manifest.model_validate(m)
 
@@ -113,7 +116,7 @@ def test_build_maps_v0_2_members_and_bumps():
         output={"measurement_level": "interval", "shape": [3], "dtype": "float32"},
     )
     m = manifest_dict_from_config(cfg, package_sha256="ab" * 32, label="lab-y")
-    assert m["schema_version"] == "0.2"
+    assert m["schema_version"] == "0.6"
     assert m["models"][0]["expected_gguf_sha256"] == "cd" * 32
     assert m["requires_real_execution"] is True
     assert m["inference_determinism"]["seed"] == 7
