@@ -44,6 +44,50 @@ def _attestation_anchor(bundle: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def derive_config_delta(obs: dict[str, Any], ref: dict[str, Any]) -> dict[str, Any]:
+    """The declared differences between two signed manifests, on the dimensions
+    the platform defines. Structured, never prose: the board renders chips from
+    this, so the explanation of a score is a machine fact a verifier can
+    recompute from the two manifests the entry anchors."""
+
+    def _model(m: dict[str, Any]) -> str | None:
+        models = m.get("models") or []
+        return f"{models[0].get('id')}" if models else None
+
+    def _generation(m: dict[str, Any]) -> str:
+        d = m.get("inference_determinism")
+        if not d:
+            return "greedy"
+        t = d.get("temperature")
+        if not t:
+            return "greedy"
+        knobs = {k: d.get(k) for k in ("top_p", "top_k", "min_p") if d.get(k) is not None}
+        knob_s = "".join(f",{k}={v}" for k, v in sorted(knobs.items()))
+        return f"sampling(temp={t}{knob_s},seeded)"
+
+    delta: dict[str, Any] = {"changed": {}, "unchanged": []}
+    dims = {
+        "model": _model,
+        "generation": _generation,
+        "reducer": lambda m: (m.get("reducer") or {}).get("kind"),
+        "feature_schema": lambda m: "declared" if m.get("feature_schema") else None,
+    }
+    for name, fn in dims.items():
+        a, b = fn(obs), fn(ref)
+        if name == "feature_schema":
+            same = (obs.get("feature_schema") or {}) == (ref.get("feature_schema") or {})
+            if same:
+                delta["unchanged"].append(name)
+            else:
+                delta["changed"][name] = {"from": "reference's", "to": "observation's"}
+            continue
+        if a == b:
+            delta["unchanged"].append(name)
+        else:
+            delta["changed"][name] = {"from": b, "to": a}
+    return delta
+
+
 def build_entry(
     *,
     record: dict[str, Any],
@@ -51,7 +95,6 @@ def build_entry(
     reference_bundle: dict[str, Any],
     tenant_id: str | None,
     key,  # TenantKey
-    note: str | None = None,
 ) -> dict[str, Any]:
     """A signed registry entry from a saved benchmark record + the two
     custody-verified bundles it was scored over. The caller has ALREADY
@@ -63,9 +106,15 @@ def build_entry(
         "published_at": datetime.now(UTC).isoformat(),
         "publisher_pubkey_hex": key.pubkey_hex,
         "tenant_id": tenant_id,
-        # One signed human sentence: what this run varied vs the baseline —
-        # the board renders it so a public reader needs no profile jargon.
-        "note": note,
+        # The MACHINE-DERIVED config delta (no free text anywhere on the board):
+        # what the observation's signed manifest declares differently from the
+        # reference's. This IS the meaning of the score — the benchmark measures
+        # whatever the declared delta varied; "no declared change" = a temporal
+        # control. Derived, signed, tamper-evident.
+        "config_delta": derive_config_delta(
+            (observation_bundle.get("manifest") or {}),
+            (reference_bundle.get("manifest") or {}),
+        ),
         "observation": {
             **(record.get("observation") or {}),
             "manifest_hash": observation_bundle.get("manifest_hash"),

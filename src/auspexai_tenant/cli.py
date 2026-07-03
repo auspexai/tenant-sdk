@@ -1538,16 +1538,10 @@ def benchmark() -> None:
     help="The baseline to score/publish against (default: the run's declared "
     "reference, or its only saved report).",
 )
-@click.option(
-    "--note",
-    default=None,
-    help="One human sentence explaining what this run varied vs the baseline — "
-    "rendered on the board, SIGNED with the entry.",
-)
 @_coord_opt
 @_key_opt
 def benchmark_publish(
-    target: str, reference_id: str | None, note: str | None, coordinator: str, key_path: Path
+    target: str, reference_id: str | None, coordinator: str, key_path: Path
 ) -> None:
     """Publish a Drift-Benchmark result as a SIGNED registry entry.
 
@@ -1641,7 +1635,6 @@ def benchmark_publish(
         reference_bundle=ref_bundle,
         tenant_id=(obs_bundle.get("manifest") or {}).get("tenant_id"),
         key=key,
-        note=note,
     )
     payload = verify_entry(entry)
     assert payload is not None

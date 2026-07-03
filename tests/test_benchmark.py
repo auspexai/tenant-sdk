@@ -451,3 +451,31 @@ def test_registry_entry_signs_and_verifies_and_tamper_fails():
     assert verify_entry({**entry, "payload_b64": _b64.b64encode(body).decode()}) is None
     # Envelope-pubkey swap breaks it (the key identity is INSIDE the payload).
     assert verify_entry({**entry, "publisher_pubkey_hex": "ab" * 32}) is None
+
+
+def test_config_delta_is_derived_not_written():
+    from auspexai_tenant.benchmark_entry import derive_config_delta
+
+    ref = {
+        "models": [{"id": "gemma-3-1b-it-q4"}],
+        "reducer": {"kind": "builtin_within_cell_tolerance"},
+        "feature_schema": {"f": 1},
+    }
+    same = derive_config_delta(dict(ref), dict(ref))
+    assert same["changed"] == {} and "model" in same["unchanged"]
+
+    qwen = {
+        "models": [{"id": "qwen2.5-0.5b-instruct-q4"}],
+        "reducer": {"kind": "builtin_process_only"},
+        "feature_schema": {"f": 1},
+    }
+    d = derive_config_delta(qwen, ref)
+    assert d["changed"]["model"] == {"from": "gemma-3-1b-it-q4", "to": "qwen2.5-0.5b-instruct-q4"}
+    assert d["changed"]["reducer"]["to"] == "builtin_process_only"
+
+    sampling = {**ref, "inference_determinism": {"temperature": 0.8, "top_p": 0.9, "seed": 0}}
+    d2 = derive_config_delta(sampling, ref)
+    assert d2["changed"]["generation"] == {
+        "from": "greedy",
+        "to": "sampling(temp=0.8,top_p=0.9,seeded)",
+    }
