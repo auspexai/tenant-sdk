@@ -49,10 +49,14 @@ coordinator (`https://coord.auspexai.network`).
   Python 3.10-safe mirror of the harness, designed to be **vendored into
   your package** so your executor runs in the worker sandbox without
   installing the SDK there. Includes **`InferenceClient`** for
-  LLM-inference tenants: deterministic chat against the model the worker
-  serves over a sandbox-local socket (temperature pinned to 0 by the worker;
-  seed/num_predict/num_ctx whitelisted — a `temperature>0` manifest is
-  rejected at submit today; seeded sampling arrives with manifest v0.2-M1).
+  LLM-inference tenants: chat against the model the worker serves over a
+  sandbox-local socket, under the **generation policy your signed manifest
+  declares** (v0.2 M1). Greedy (temperature 0) is the default — byte-for-byte
+  deterministic, seed/num_predict/num_ctx whitelisted. Seeded sampling
+  (`temperature > 0` with a pinned `seed`, plus optional `top_p`/`top_k`/`min_p`
+  — manifest v0.5) is honored per-request by the worker; it requires a
+  non-agreement collection mode (process-only at replication 1), since sampled
+  replicas legitimately differ.
 - Static work-unit packing (`tar_writer`/`tar_reader`) and package-digest
   helpers that match the worker's verification byte-for-byte.
 

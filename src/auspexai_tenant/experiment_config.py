@@ -277,6 +277,10 @@ def manifest_dict_from_config(
                 if reducer.get("tolerance_features")
                 else {}
             ),
+            # A custom reducer (the non-agreement fold a seeded-sampling experiment
+            # declares — §3c) carries its own argv + optional image digest.
+            **({"command": list(reducer["command"])} if reducer.get("command") else {}),
+            **({"image_sha256": reducer["image_sha256"]} if reducer.get("image_sha256") else {}),
         },
     }
     # Approver attestations (required by the schema when sensitive flags are set)
@@ -288,11 +292,19 @@ def manifest_dict_from_config(
     # ── v0_2 members (all optional; emitted only when declared) ──────────────
     if e.get("requires_real_execution"):  # M2
         manifest["requires_real_execution"] = True
-    det = cfg.section("determinism")  # M1
+    det = cfg.section("determinism")  # M1 (+ the v0_5 sampling whitelist)
     if det:
         manifest["inference_determinism"] = {
             k: det[k]
-            for k in ("temperature", "seed", "serving_version_pin", "hardware_class")
+            for k in (
+                "temperature",
+                "seed",
+                "serving_version_pin",
+                "hardware_class",
+                "top_p",
+                "top_k",
+                "min_p",
+            )
             if det.get(k) is not None
         }
     out = cfg.section("output")  # M4
@@ -320,6 +332,9 @@ def manifest_dict_from_config(
 
     # schema_version bumps to the lowest version that covers the declared members,
     # so an existing config (none declared) stays a valid 0.1 manifest unchanged.
+    uses_v0_5 = any(
+        k in manifest.get("inference_determinism", {}) for k in ("top_p", "top_k", "min_p")
+    )
     uses_v0_4 = "pre_registration" in manifest
     uses_v0_3 = "feature_schema" in manifest
     uses_v0_2 = (
@@ -329,6 +344,8 @@ def manifest_dict_from_config(
         or "output_schema" in manifest
     )
     manifest["schema_version"] = (
-        "0.4" if uses_v0_4 else ("0.3" if uses_v0_3 else ("0.2" if uses_v0_2 else "0.1"))
+        "0.5"
+        if uses_v0_5
+        else ("0.4" if uses_v0_4 else ("0.3" if uses_v0_3 else ("0.2" if uses_v0_2 else "0.1")))
     )
     return manifest

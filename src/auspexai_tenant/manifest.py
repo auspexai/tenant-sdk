@@ -54,17 +54,57 @@ class Model(BaseModel):
 
 
 class InferenceDeterminism(BaseModel):
-    """v0_2 / M1: the determinism profile for a consensus inference run. The
-    worker pins `temperature`/`seed` and, when `serving_version_pin` is set,
-    hard-refuses a unit whose serving stack is outside the pin (the refusal is
-    retryable → re-offered to an eligible worker). Omit ⇒ worker defaults."""
+    """v0_2 / M1: the generation policy for a consensus inference run. Two modes,
+    keyed on the declared temperature (inference_determinism_scoping_memo §3a):
+
+    - **greedy** — `temperature == 0` (or the block omitted): byte-for-byte
+      deterministic decoding. The default; every pre-v0.5 manifest is this.
+    - **seeded-sampling** — `temperature > 0` with a **pinned `seed`** (required:
+      unseeded sampling is refused — the reproducibility floor, §5). The optional
+      sampling knobs `top_p`/`top_k`/`min_p` (v0.5, ratified Q2) are a fixed,
+      explicitly-enumerated whitelist; the worker's broker honors the declared
+      values per-request and rejects anything beyond them.
+
+    The worker enforces the declaration (never a constant), and when
+    `serving_version_pin` is set hard-refuses a unit whose serving stack is
+    outside the pin (the refusal is retryable → re-offered to an eligible
+    worker). Omit the block ⇒ worker defaults (greedy)."""
 
     model_config = ConfigDict(extra="forbid")
 
-    temperature: float = 0.0
+    temperature: Annotated[float, Field(ge=0)] = 0.0
     seed: int | None = None
     serving_version_pin: str | None = None  # e.g. "ollama/0.17.7"
     hardware_class: str | None = None  # e.g. "cpu" | "cuda"
+    # v0_5: the seeded-sampling whitelist (memo Q2). Only meaningful under
+    # sampling — declaring a knob at temperature 0 is rejected (an unread
+    # declaration is the declarative-enforcement bug class).
+    top_p: Annotated[float | None, Field(gt=0, le=1)] = None
+    top_k: Annotated[int | None, Field(ge=1)] = None
+    min_p: Annotated[float | None, Field(ge=0, lt=1)] = None
+
+    @property
+    def is_sampling(self) -> bool:
+        return self.temperature > 0
+
+    @property
+    def sampling_knobs(self) -> dict[str, float | int]:
+        """The declared v0.5 sampling knobs, by name (empty when none declared)."""
+        return {k: v for k in ("top_p", "top_k", "min_p") if (v := getattr(self, k)) is not None}
+
+    @model_validator(mode="after")
+    def _sampling_coherence(self) -> InferenceDeterminism:
+        if self.is_sampling and self.seed is None:
+            raise ValueError(
+                "seeded sampling (temperature > 0) requires a pinned 'seed' — "
+                "unseeded sampling is not accepted (reproducibility floor)"
+            )
+        if not self.is_sampling and self.sampling_knobs:
+            raise ValueError(
+                f"sampling knobs {sorted(self.sampling_knobs)} require temperature > 0 "
+                "(greedy decoding never reads them — declare them only under sampling)"
+            )
+        return self
 
 
 class OutputSchema(BaseModel):
@@ -388,13 +428,14 @@ class PreRegistration(BaseModel):
 
 
 class Manifest(BaseModel):
-    """AuspexAI tenant manifest, v0.1 / v0.2 / v0.3 / v0.4.
+    """AuspexAI tenant manifest, v0.1 through v0.5.
 
-    Mirrors schemas/manifest_v0_1.json + v0_2.json + v0_3.json + v0_4.json. Each
-    version is a superset of the prior, enforcement keyed on PRESENCE: v0.2 adds
-    four optional members (M1-M4); v0.3 adds the optional `feature_schema`
-    (D16.1); v0.4 adds the optional `pre_registration` (D16.2). Older versions
-    stay valid forever (re-verify-forever, no forced migration). See
+    Mirrors schemas/manifest_v0_1.json … v0_5.json. Each version is a superset
+    of the prior, enforcement keyed on PRESENCE: v0.2 adds four optional members
+    (M1-M4); v0.3 adds the optional `feature_schema` (D16.1); v0.4 adds the
+    optional `pre_registration` (D16.2); v0.5 extends `inference_determinism`
+    with the seeded-sampling whitelist (top_p/top_k/min_p — memo Q2). Older
+    versions stay valid forever (re-verify-forever, no forced migration). See
     sdk_license_boundary_position.md §6.2 for the published-contract framing.
     """
 
@@ -404,7 +445,7 @@ class Manifest(BaseModel):
     # Every superset member is OPTIONAL — enforcement keys on PRESENCE, so a
     # manifest declaring none of a version's members is structurally the prior
     # version with schema_version bumped.
-    schema_version: Literal["0.1", "0.2", "0.3", "0.4"]
+    schema_version: Literal["0.1", "0.2", "0.3", "0.4", "0.5"]
     tenant_id: Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]{2,63}$")]
     tenant_maintainer_contact: EmailStr
     experiment_id: Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]{2,127}$")]
@@ -442,6 +483,39 @@ class Manifest(BaseModel):
     pre_registration: PreRegistration | None = None
 
     @model_validator(mode="after")
+    def _sampling_coherent_with_reducer(self) -> Manifest:
+        """The §3c coherence gate, mirrored at build (the D16.2 precedent:
+        enforced here AND at coordinator submit). Sampled replicas legitimately
+        differ, so an agreement reducer would either spuriously fail or falsely
+        claim corroboration — sampling requires a non-agreement collection mode
+        (process-only / a distributional fold via a custom reducer)."""
+        det = self.inference_determinism
+        if (
+            det is not None
+            and det.is_sampling
+            and self.reducer.kind in ("builtin_hash_agreement", "builtin_within_cell_tolerance")
+        ):
+            raise ValueError(
+                f"seeded sampling (temperature > 0) is incoherent with the agreement "
+                f"reducer {self.reducer.kind!r} — sampled replicas legitimately differ; "
+                "declare a non-agreement collection mode (inference_determinism memo §3c)"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _sampling_knobs_require_v0_5(self) -> Manifest:
+        """The top_p/top_k/min_p whitelist is a v0.5 contract extension — the
+        published v0.2-v0.4 schema artifacts are immutable and do not carry it."""
+        det = self.inference_determinism
+        if det is not None and det.sampling_knobs and self.schema_version != "0.5":
+            raise ValueError(
+                f"sampling knobs {sorted(det.sampling_knobs)} require schema_version "
+                '"0.5" (the published v0.2-v0.4 schemas are immutable and do not '
+                "carry them)"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _sensitive_requires_attestation(self) -> Manifest:
         if self.sensitive_content_flags and not self.approver_attestations:
             raise ValueError(
@@ -464,7 +538,7 @@ class Manifest(BaseModel):
         if self.schema_version in ("0.1", "0.2", "0.3"):
             raise ValueError(
                 'a manifest declaring pre_registration must set schema_version "0.4" '
-                "(the D16.2 published-contract member)"
+                "or later (the D16.2 published-contract member)"
             )
         fs = self.feature_schema or {}
         if not fs:

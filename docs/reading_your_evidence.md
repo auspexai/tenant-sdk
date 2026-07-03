@@ -50,6 +50,7 @@ df = evidence.load_verified("evidence.json")   # raises if anything fails to ver
 | replication + `integrity_basis` counts | how heavily the experiment replicated, and the agree/diverge mix | weight by N; read the network divergence rate |
 | containment (`required` vs `ran_under`) | what the apparatus required vs what ran | cross-check against the per-result `ran_under` |
 | approval path (auto vs human) + tenant tier | the apparatus's own gating of this experiment | provenance context |
+| `generation` (`mode` + `params`) | the generation policy the signed manifest declared: `greedy` (byte-deterministic decoding — replicas *should* match) vs `seeded_sampling` (declared temperature + pinned seed + whitelist knobs — replicas *legitimately differ*; each is an independent sample) | interpret divergence **in kind**: under `seeded_sampling`, differing outputs are the design, not a fault; under `greedy`, they are a signal |
 
 **3. The transparency anchor** — the attestation's Rekor inclusion (`logIndex` + `integratedTime`): a public log entry letting a third party confirm the attestation existed at a point in time, independent of you or AuspexAI.
 
