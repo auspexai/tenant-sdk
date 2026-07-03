@@ -856,6 +856,48 @@ def experiment_submit(pkg_dir: Path, manifest_name: str, coordinator: str, key_p
         click.echo(f"next:       auspexai-tenant experiment run {label}   # or 'latest'")
 
 
+def _record_benchmark_declaration(cfg, experiment_id: str, label: str) -> None:
+    """Write the run's benchmark declaration beside it (runs/<label>/
+    benchmark_reference.json) when the config declares one. The declaration is
+    made at LAUNCH — before any data exists (the pre-registration posture) — and
+    is what lets the dashboard materialize the score automatically instead of
+    asking the researcher to choose a comparison after the fact. Best-effort:
+    a write failure never fails the launch."""
+    try:
+        ref = cfg.benchmark_reference
+    except ValueError as e:
+        click.echo(f"WARNING: [benchmark] declaration ignored: {e}", err=True)
+        return
+    if not ref:
+        return
+    if ref == experiment_id:
+        click.echo("WARNING: [benchmark].reference is this run itself — ignored.", err=True)
+        return
+    try:
+        from datetime import UTC, datetime
+
+        layout = RunLayout(label)
+        layout.dir.mkdir(parents=True, exist_ok=True)
+        (layout.dir / "benchmark_reference.json").write_text(
+            json.dumps(
+                {
+                    "schema": "auspexai-benchmark-declaration/v0",
+                    "mode": "fixed_reference",
+                    "experiment_id": experiment_id,
+                    "label": label,
+                    "reference_experiment_id": ref,
+                    "declared_at": datetime.now(UTC).isoformat(),
+                    "source": "experiment_config"
+                    + (f":profiles.{cfg.active_profile}" if cfg.active_profile else ""),
+                },
+                indent=2,
+            )
+        )
+        click.echo(f"benchmark declared: will score against {ref} (recorded beside the run)")
+    except (OSError, ValueError) as e:
+        click.echo(f"WARNING: could not record the benchmark declaration: {e}", err=True)
+
+
 def _resolve_experiment(client, target: str) -> tuple[str, str]:
     """Resolve a run TARGET — a coordinator experiment id, a tenant label, or
     the literal 'latest' — to (experiment_id, label). 'latest' = the most
@@ -1301,12 +1343,13 @@ def experiment_launch(
         coordinator=coordinator,
         key_path=key_path,
     )
+    client = _make_client(coordinator, key_path)
+    experiment_id, label = _resolve_experiment(client, "latest")
+    _record_benchmark_declaration(cfg, experiment_id, label)
     if no_drive:
         click.echo("\nbuilt + submitted. Approve it, then: auspexai-tenant experiment run latest")
         return
 
-    client = _make_client(coordinator, key_path)
-    experiment_id, label = _resolve_experiment(client, "latest")
     click.echo("")
     click.echo(f"submitted {label}  ({experiment_id})")
     # Wait for the maintainer-approval gate before driving: the driver can only

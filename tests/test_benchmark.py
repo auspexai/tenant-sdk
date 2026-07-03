@@ -265,3 +265,35 @@ def test_plot_report_writes_png(tmp_path):
     out = tmp_path / "ladder.png"
     plot_report(drift_benchmark(obs, ref, SCHEMA), str(out), title="t")
     assert out.stat().st_size > 5000  # a real PNG, not an empty file
+
+
+def test_benchmark_declaration_parses_and_rejects_typos(tmp_path):
+    # Tenant-generic declaration, platform-fixed semantics: [benchmark].reference
+    # is the SDK-level surface every tenant uses; typo'd keys fail loudly (the
+    # declarative-enforcement-gap lesson: every declared field must be read).
+    import pytest as _pytest
+
+    from auspexai_tenant.experiment_config import load_experiment_config
+
+    good = tmp_path / "experiment.toml"
+    good.write_text('[experiment]\nlabel = "x"\n[benchmark]\nreference = "exp-ref"\n')
+    assert load_experiment_config(good).benchmark_reference == "exp-ref"
+
+    none = tmp_path / "none.toml"
+    none.write_text('[experiment]\nlabel = "x"\n')
+    assert load_experiment_config(none).benchmark_reference is None
+
+    bad = tmp_path / "bad.toml"
+    bad.write_text('[experiment]\nlabel = "x"\n[benchmark]\nrefrence = "exp-ref"\n')
+    with _pytest.raises(ValueError, match="unknown key"):
+        load_experiment_config(bad).benchmark_reference  # noqa: B018
+
+    # "" = the explicit opt-out (a baseline profile switching OFF an inherited
+    # top-level declaration).
+    off = tmp_path / "off.toml"
+    off.write_text(
+        '[experiment]\nlabel = "x"\n[benchmark]\nreference = "exp-ref"\n'
+        '[profiles.calibration.benchmark]\nreference = ""\n'
+    )
+    assert load_experiment_config(off).benchmark_reference == "exp-ref"
+    assert load_experiment_config(off, profile="calibration").benchmark_reference is None

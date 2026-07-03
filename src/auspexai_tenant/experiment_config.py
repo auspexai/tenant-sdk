@@ -71,6 +71,33 @@ class ExperimentConfig:
         return self.driver.get("path")
 
     @property
+    def benchmark_reference(self) -> str | None:
+        """`[benchmark].reference` — the experiment this run's Drift Benchmark
+        scores against (its signed manifest defines the envelope). TENANT-GENERIC
+        declaration, platform-fixed semantics (the feature_schema pattern):
+        tenants declare WHAT to score against; the envelope-units standard is
+        never per-tenant. Declared up front = the pre-registration posture (the
+        comparison is chosen before the data exists); the launch flow records it
+        beside the run so the dashboard materializes the score automatically.
+        Mode "fixed_reference" is the only mode today; new practices (e.g. a
+        rolling previous-run reference) are additive declarative modes needing
+        their own design pass — never tenant code."""
+        b = self.raw.get("benchmark")
+        if not isinstance(b, dict):
+            return None
+        unknown = set(b) - {"reference"}
+        if unknown:
+            raise ValueError(
+                f"[benchmark] has unknown key(s) {sorted(unknown)} — only 'reference' is defined"
+            )
+        ref = b.get("reference")
+        if not isinstance(ref, str):
+            raise ValueError("[benchmark].reference must be a string")
+        # "" is the explicit opt-out — how a profile (e.g. the calibration
+        # baseline itself) switches OFF a top-level declaration it inherits.
+        return ref.strip() or None
+
+    @property
     def key_path(self) -> str | None:
         """`[experiment].key_path` — the tenant signing key. Set once here and
         the SDK signs with it, so `--key` need not be passed on every command."""
