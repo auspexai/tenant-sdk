@@ -253,3 +253,15 @@ def test_diverged_units_surface_from_the_signed_predicate(monkeypatch):
     text = format_report(r)
     assert "within-run divergence" in text
     assert any("could not corroborate" in n for n in r.notes)
+
+
+def test_plot_report_writes_png(tmp_path):
+    pytest = __import__("pytest")
+    pytest.importorskip("matplotlib")
+    from auspexai_tenant.benchmark_plot import plot_report
+
+    ref = [_obs("p-a", "h1", 0.900, 20, [["x", 1], ["y", 1]])]
+    obs = [_obs("p-a", "h2", 0.950, 20, [["q", 1], ["r", 1]])]
+    out = tmp_path / "ladder.png"
+    plot_report(drift_benchmark(obs, ref, SCHEMA), str(out), title="t")
+    assert out.stat().st_size > 5000  # a real PNG, not an empty file

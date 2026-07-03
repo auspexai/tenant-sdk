@@ -1429,12 +1429,24 @@ def benchmark() -> None:
 )
 @click.option("--json", "as_json", is_flag=True, help="Emit the full report as JSON.")
 @click.option(
+    "--plot",
+    "plot_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Also render the ladder PNG here (needs the [analysis] extra).",
+)
+@click.option(
     "--no-verify",
     is_flag=True,
     help="Skip verify_bundle on the two inputs (offline scoring of unverified data).",
 )
 def benchmark_drift(
-    bundle: Path, reference: Path, key_feature: str, as_json: bool, no_verify: bool
+    bundle: Path,
+    reference: Path,
+    key_feature: str,
+    as_json: bool,
+    plot_path: Path | None,
+    no_verify: bool,
 ) -> None:
     """Score BUNDLE's behavior against REFERENCE in envelope units (EU).
 
@@ -1469,6 +1481,18 @@ def benchmark_drift(
         click.echo(json.dumps(report.to_dict(), indent=2))
     else:
         click.echo(format_report(report))
+    if plot_path is not None:
+        from auspexai_tenant.benchmark_plot import plot_report
+
+        obs_id = (data.get("manifest") or {}).get("experiment_id") or bundle.stem
+        ref_id = (ref.get("manifest") or {}).get("experiment_id") or reference.stem
+        plot_report(
+            report,
+            str(plot_path),
+            title=f"Drift Benchmark — {obs_id}",
+            subtitle=None,
+        )
+        click.echo(f"plot: {plot_path}  (reference: {ref_id})")
 
 
 # ----------------------------------------------------------------------------
