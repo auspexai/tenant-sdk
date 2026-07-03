@@ -1568,6 +1568,8 @@ def benchmark_publish(
     # The same base every other surface resolves: [runs].dir (config walk-up)
     # > $AUSPEXAI_RUNS_DIR > ./runs-if-exists > the stable per-user base.
     try:
+        from auspexai_tenant.experiment_config import load_experiment_config
+
         cfg_runs_dir = load_experiment_config(None).runs_dir
     except (ValueError, OSError):
         cfg_runs_dir = None
