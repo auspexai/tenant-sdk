@@ -1407,6 +1407,71 @@ def model_catalog(coordinator: str, key_path: Path) -> None:
 
 
 # ----------------------------------------------------------------------------
+# the Drift Benchmark (D16.4) — one comparable measurement of behavioral drift
+# ----------------------------------------------------------------------------
+
+
+@main.group()
+def benchmark() -> None:
+    """The Drift Benchmark — envelope-normalized drift, comparable across runs,
+    models, and configurations (see docs/analyzing_your_results.md)."""
+
+
+@benchmark.command("drift")
+@click.argument("bundle", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("reference", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "--key",
+    "key_feature",
+    default="probe_id",
+    show_default=True,
+    help="The dotted feature path observations are joined on (a role=key feature).",
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit the full report as JSON.")
+@click.option(
+    "--no-verify",
+    is_flag=True,
+    help="Skip verify_bundle on the two inputs (offline scoring of unverified data).",
+)
+def benchmark_drift(
+    bundle: Path, reference: Path, key_feature: str, as_json: bool, no_verify: bool
+) -> None:
+    """Score BUNDLE's behavior against REFERENCE in envelope units (EU).
+
+    Both arguments are exported evidence bundles (`experiment export` /
+    the dashboard's Download bundle). EU normalizes every declared scalar
+    comparison by its own calibrated envelope, so orthogonal features —
+    and different models/configurations — land on ONE comparable scale:
+    <1 EU is within calibrated noise; >=1 EU is drift. Byte-level
+    divergence is reported as a separate overlay, never folded into the
+    scalar. The envelope comes from the REFERENCE bundle's signed manifest."""
+    from auspexai_tenant.benchmark import (
+        _load_bundle_file,
+        drift_benchmark_bundles,
+        format_report,
+    )
+    from auspexai_tenant.evidence import verify_bundle
+
+    data = _load_bundle_file(str(bundle))
+    ref = _load_bundle_file(str(reference))
+    if not no_verify:
+        for label, blob in (("bundle", data), ("reference", ref)):
+            verification = verify_bundle(blob)
+            if not verification.ok:
+                click.echo(
+                    f"ERROR: {label} failed verification — score it anyway with "
+                    "--no-verify if you understand what that means.",
+                    err=True,
+                )
+                sys.exit(1)
+    report = drift_benchmark_bundles(data, ref, key_feature=key_feature)
+    if as_json:
+        click.echo(json.dumps(report.to_dict(), indent=2))
+    else:
+        click.echo(format_report(report))
+
+
+# ----------------------------------------------------------------------------
 # executor-package upload (coordinator-served provisioning, §9 #40a)
 # ----------------------------------------------------------------------------
 
