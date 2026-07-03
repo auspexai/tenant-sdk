@@ -1541,6 +1541,12 @@ def benchmark() -> None:
 )
 @click.option("--json", "as_json", is_flag=True, help="Emit the full report as JSON.")
 @click.option(
+    "--include-diverged",
+    is_flag=True,
+    help="Also score diverged/outlier payloads (forensics — they failed the run's "
+    "own integrity predicate and stay out of the scalar by default).",
+)
+@click.option(
     "--plot",
     "plot_path",
     type=click.Path(dir_okay=False, path_type=Path),
@@ -1556,6 +1562,7 @@ def benchmark_drift(
     bundle: Path,
     reference: Path,
     key_feature: str,
+    include_diverged: bool,
     as_json: bool,
     plot_path: Path | None,
     no_verify: bool,
@@ -1588,7 +1595,9 @@ def benchmark_drift(
                     err=True,
                 )
                 sys.exit(1)
-    report = drift_benchmark_bundles(data, ref, key_feature=key_feature)
+    report = drift_benchmark_bundles(
+        data, ref, key_feature=key_feature, include_diverged=include_diverged
+    )
     if as_json:
         click.echo(json.dumps(report.to_dict(), indent=2))
     else:

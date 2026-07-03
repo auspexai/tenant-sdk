@@ -364,3 +364,33 @@ def test_runs_base_falls_back_to_stable_path_not_cwd(tmp_path, monkeypatch):
     # An existing ./runs keeps the repo-local workflow working.
     (tmp_path / "runs").mkdir()
     assert runs_base(None) == Path("runs")
+
+
+def test_additional_observation_rows_score_by_default_diverged_opt_in():
+    # D19 (ratified): observe-only extras are first-class evidence — they join
+    # the scoring set; diverged/outlier payloads are forensics (opt-in).
+    ref_b = _bundle([_obs("p-a", "h1", 0.90, 20, [["x", 1]])])
+    obs_b = _bundle([_obs("p-a", "h1", 0.905, 20, [["x", 1]])])
+    obs_b["additional_results"] = [
+        {
+            "unit_id": "u9",
+            "integrity_basis": "observation",
+            "payload": _obs("p-a", "h2", 0.91, 20, [["x", 1]]),
+        },
+        {
+            "unit_id": "u9",
+            "integrity_basis": "diverged",
+            "payload": _obs("p-a", "h3", 0.30, 20, [["z", 1]]),
+        },
+    ]
+    from auspexai_tenant.benchmark import observations_from_bundle
+
+    default_obs, _ = observations_from_bundle(obs_b)
+    assert len(default_obs) == 2  # consensus + observation, NOT diverged
+    forensic_obs, _ = observations_from_bundle(obs_b, include_diverged=True)
+    assert len(forensic_obs) == 3
+    # And the scalar stays honest: the wild diverged payload moves the score
+    # only under the explicit flag.
+    calm = drift_benchmark_bundles(obs_b, ref_b)
+    wild = drift_benchmark_bundles(obs_b, ref_b, include_diverged=True)
+    assert (calm.peak_eu or 0) < (wild.peak_eu or 0)

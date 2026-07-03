@@ -237,3 +237,16 @@ Both inputs are verified evidence bundles (custody + attestation checks run
 first). Calibration anchors for intuition, from production data: same
 config re-run ≈ 0 EU · seeded sampling (temp 0.8) ≈ 6.7 EU on the open-ended
 probe only · a different model ≈ 10 EU panel-wide.
+
+
+### Non-consensus evidence in the benchmark (D19)
+
+Observe-only extra replicas (`integrity_basis == "observation"`) join the
+drift-benchmark scoring set by default — an observe-only run at replication N
+scores all N observations. Diverged and outlier payloads never move the
+headline scalar: they appear in your DataFrame and in the divergence overlay,
+and `benchmark drift --include-diverged` (or
+`drift_benchmark_bundles(..., include_diverged=True)`) scores them explicitly
+when you are doing apparatus forensics — e.g. attributing drift to a serving-
+engine release. The headline number always means *custody-verified,
+integrity-passing behavior*.

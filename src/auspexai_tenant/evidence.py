@@ -53,6 +53,11 @@ from auspexai_tenant.attestation import (
 EVIDENCE_BUNDLE_SCHEMA = "auspexai-evidence-bundle/v1"
 FLAT_ROOT_KIND = "flat-v0"
 BUNDLE_SCHEMA_V1 = "auspexai-evidence-bundle/v1"
+# D19: v2 = v1 + the basis-labeled `additional_results` section (non-consensus
+# payloads under the anchor-or-omit rule). A bundle WITHOUT the section is
+# emitted as v1 — v2 appears exactly when there is a section to verify.
+BUNDLE_SCHEMA_V2 = "auspexai-evidence-bundle/v2"
+_KNOWN_BUNDLE_SCHEMAS = (BUNDLE_SCHEMA_V1, BUNDLE_SCHEMA_V2)
 
 # Published AuspexAI coordinator signing keys (the public network's). Each is
 # Fulcio-attested in Rekor and listed in AUTHORIZED_SIGNERS.md. The SDK embeds
@@ -142,6 +147,12 @@ class BundleVerification:
     # only a record that fails to VERIFY (tamper) does.
     deviations_disclosed: int | None = None
     deviations_ok: bool | None = None
+    # D19: every `additional_results` row anchors to a SIGNED artifact
+    # (observation → its receipt's result_hash_anchors; diverged → the
+    # predicate's diverged_units hashes; outlier → the predicate tolerance
+    # block's outlier_result_hashes) AND its worker signature verifies. None
+    # when the bundle has no section (v1); False = an unanchored or forged row.
+    additional_results_ok: bool | None = None
     # C7 Inc 4: a within_cell_tolerance unit is ATTESTED by its deterministic
     # representative's hash (not a replica's), with the representative itself
     # shipped in the bundle's `unit_consensus` block. This check RECOMPUTES each
@@ -186,8 +197,88 @@ class BundleVerification:
             and self.prereg_bound_ok is not False
             and self.design_precedes_data_ok is not False
             and self.deviations_ok is not False
+            and self.additional_results_ok is not False
             and self.worker_signatures.ok
         )
+
+
+def _receipt_anchor_hashes(cose_b64: str) -> set[str] | None:
+    """Decode one bundle receipt (COSE Sign1 → in-toto statement → receipt
+    CBOR) and return its `result_hash_anchors` result_sha256 set — the signed
+    anchor an observation row must match. None when the COSE signature is
+    invalid or the shape is unrecognized (the row then fails to anchor)."""
+    try:
+        import cbor2
+
+        valid, _signer, payload = _cose_verify(b64decode(cose_b64))
+        if not valid:
+            return None
+        statement = cbor2.loads(payload)
+        receipt = cbor2.loads(statement["predicate"])
+        return {
+            a["result_sha256"]
+            for a in receipt.get("result_hash_anchors") or []
+            if a.get("result_sha256")
+        }
+    except Exception:
+        return None
+
+
+def verify_additional_results(
+    bundle: dict[str, Any], att: ResultSetAttestation | None
+) -> bool | None:
+    """D19 anchor check: every `additional_results` row must (a) carry a valid
+    worker signature (unless aged off) and (b) anchor its hash to a SIGNED
+    artifact appropriate to its basis. None when the bundle has no section."""
+    rows = bundle.get("additional_results")
+    if not rows:
+        return None
+    if att is None:
+        return False  # nothing signed to anchor against
+    diverged_map = {
+        d.get("unit_id"): set(d.get("result_hashes") or []) for d in (att.diverged_units or [])
+    }
+    outlier_map = {
+        u["unit_id"]: set((u.get("tolerance") or {}).get("outlier_result_hashes") or [])
+        for u in att.units
+    }
+    receipt_by_id = {r.get("receipt_id"): r.get("cose_b64") for r in bundle.get("receipts") or []}
+    anchor_cache: dict[str, set[str] | None] = {}
+    for r in rows:
+        basis = r.get("integrity_basis")
+        unit = r.get("unit_id")
+        # Worker signature (same convention as consensus rows; aged-off rows
+        # are hash-only stubs and skip the signature but never the anchor).
+        if not r.get("aged_off"):
+            try:
+                pub = Ed25519PublicKey.from_public_bytes(bytes.fromhex(r["worker_pubkey_hex"]))
+                pub.verify(b64decode(r["worker_signature"]), _canonical_result_bytes(r))
+            except (InvalidSignature, KeyError, ValueError):
+                return False
+        if basis == "diverged":
+            if r.get("semantic_hash") not in diverged_map.get(unit, set()):
+                return False
+        elif basis == "outlier":
+            if r.get("semantic_hash") not in outlier_map.get(unit, set()):
+                return False
+        elif basis == "observation":
+            rid = r.get("receipt_id")
+            cose = receipt_by_id.get(rid)
+            if not cose:
+                return False
+            if rid not in anchor_cache:
+                anchor_cache[rid] = _receipt_anchor_hashes(cose)
+            anchors = anchor_cache[rid]
+            if anchors is None:
+                return False
+            if r.get("aged_off"):
+                continue  # canonical bytes unavailable; receipt presence + COSE validity attest it
+            body_hash = hashlib.sha256(_canonical_result_bytes(r)).hexdigest()
+            if body_hash not in anchors:
+                return False
+        else:
+            return False  # unknown basis — never silently accept
+    return True
 
 
 def _attestation_from_bundle(block: dict[str, Any]) -> ResultSetAttestation:
@@ -428,10 +519,10 @@ def verify_bundle(
     # carries). Pre-EB-1 bundles have no schema member and keep the lenient
     # legacy path.
     schema = bundle.get("schema")
-    if schema is not None and schema != BUNDLE_SCHEMA_V1:
+    if schema is not None and schema not in _KNOWN_BUNDLE_SCHEMAS:
         raise ValueError(
             f"unknown evidence-bundle schema {schema!r} — this auspexai-tenant "
-            f"version understands {BUNDLE_SCHEMA_V1!r}; upgrade the SDK to "
+            f"version understands {_KNOWN_BUNDLE_SCHEMAS!r}; upgrade the SDK to "
             "verify this bundle"
         )
     t = bundle["transfer"]
@@ -530,6 +621,9 @@ def verify_bundle(
     # there, so a missing field is a strip-tamper, not an old coordinator).
     ws = verify_worker_signatures(consensus, strict=schema is not None)
 
+    # D19: the non-consensus section (v2) — anchor-or-fail.
+    additional_ok = verify_additional_results(bundle, att if block else None)
+
     # C7 Inc 4: recompute each tolerance unit's attested representative hash from
     # the representative shipped in the bundle — the leaf is recomputable from
     # bytes in hand. An entry missing its representative (or failing the
@@ -597,6 +691,7 @@ def verify_bundle(
         design_precedes_data_ok=design_precedes_data,
         deviations_disclosed=deviations_disclosed,
         deviations_ok=deviations_ok,
+        additional_results_ok=additional_ok,
     )
 
 
@@ -740,6 +835,28 @@ def load_verified(
             # A2 #32: the worker-SIGNED sandbox policy each row ran under
             # (covered by the verified signature) — so a researcher can stratify
             # by containment, not just trust the apparatus's aggregate.
+            "ran_under": r.get("ran_under"),
+        }
+        _flatten_into(row, "input", inputs.get(r["unit_id"]) or {})
+        _flatten_into(row, "output", r.get("payload") or {})
+        rows.append(row)
+    # D19: the non-consensus section becomes REAL rows (the guide's original
+    # `df[df.integrity_basis == "diverged"]` promise) — each row's basis comes
+    # from the row itself (observation / diverged / outlier), already verified
+    # against its signed anchor by verify_bundle. Aged-off stubs are skipped
+    # (hash-only; they remain visible via df.attrs["diverged_units"]).
+    for r in data.get("additional_results") or []:
+        if r.get("aged_off") or r.get("payload") is None:
+            continue
+        row = {
+            "unit_id": r["unit_id"],
+            "result_id": r.get("result_id"),
+            "receipt_id": r.get("receipt_id"),
+            "completed_at": r.get("completed_at"),
+            "semantic_hash": r.get("semantic_hash"),
+            "aged_off": False,
+            "integrity_basis": r.get("integrity_basis"),
+            "served_weights": r.get("served_weights"),
             "ran_under": r.get("ran_under"),
         }
         _flatten_into(row, "input", inputs.get(r["unit_id"]) or {})

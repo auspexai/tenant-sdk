@@ -560,7 +560,7 @@ def test_unknown_future_schema_refuses_with_upgrade_hint():
     rather than verify whatever subset happens to parse."""
     coord, worker = _keys()
     bundle = _make_bundle(coord, worker)
-    bundle["schema"] = "auspexai-evidence-bundle/v2"
+    bundle["schema"] = "auspexai-evidence-bundle/v3"  # v2 became known with D19
     with pytest.raises(ValueError, match="upgrade the SDK"):
         verify_bundle(bundle)
 

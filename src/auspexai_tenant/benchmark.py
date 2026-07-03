@@ -335,12 +335,26 @@ def drift_benchmark(
 # ── bundle adapters (the offline, custody-verified entry point) ───────────────
 
 
-def observations_from_bundle(bundle: dict) -> tuple[list[dict], dict[str, dict]]:
+def observations_from_bundle(
+    bundle: dict, *, include_diverged: bool = False
+) -> tuple[list[dict], dict[str, dict]]:
     """(result payloads, feature_schema) from an exported evidence bundle.
-    Callers who need custody assurance run `verify_bundle` first (the CLI does)."""
+    Callers who need custody assurance run `verify_bundle` first (the CLI does).
+
+    D19 (ratified 2026-07-03): `additional_results` rows with basis
+    `observation` (observe-only extra replicas — first-class evidence) join by
+    DEFAULT; `diverged`/`outlier` rows joined only on `include_diverged=True`
+    (they failed the run's own integrity predicate — forensics, not the
+    headline scalar)."""
     payloads = [
         r.get("payload") or {} for r in bundle.get("consensus_results") or [] if r.get("payload")
     ]
+    for r in bundle.get("additional_results") or []:
+        basis = r.get("integrity_basis")
+        if not r.get("payload"):
+            continue
+        if basis == "observation" or (include_diverged and basis in ("diverged", "outlier")):
+            payloads.append(r["payload"])
     schema = (bundle.get("manifest") or {}).get("feature_schema") or {}
     return payloads, schema
 
@@ -379,11 +393,12 @@ def drift_benchmark_bundles(
     reference_bundle: dict,
     *,
     key_feature: str = "probe_id",
+    include_diverged: bool = False,
 ) -> DriftBenchmark:
     """Benchmark one exported bundle against a reference bundle. The feature
     schema (and therefore the ENVELOPE) is taken from the REFERENCE bundle —
     the reference defines the calibrated behavior being drifted FROM."""
-    obs, obs_schema = observations_from_bundle(bundle)
+    obs, obs_schema = observations_from_bundle(bundle, include_diverged=include_diverged)
     ref, ref_schema = observations_from_bundle(reference_bundle)
     schema = ref_schema or obs_schema
     report = drift_benchmark(obs, ref, schema, key_feature=key_feature)

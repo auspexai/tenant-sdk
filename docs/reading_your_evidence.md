@@ -68,11 +68,13 @@ df = evidence.load_verified("evidence.json")   # raises if anything fails to ver
    ```
 3. **Weight by replication + independence.** Carry N (replication) and the footprint's independence into your error bars, not just the point estimate. A `process_only` single-worker row is not a replicated one.
 4. **Correct for the apparatus footprint.** Treat it as a covariate to subtract, not noise to ignore — that is firewall #2's whole purpose: *"the network watched, and here is how much that mattered."*
-5. **Treat divergence as signal, not failure.** Under firewall #1 a worker that disagrees with quorum earns **equal trust** — divergence is never discarded. Diverged units' *payloads* are not exported (only their worker-signed hashes ride the signed predicate), so they never appear as DataFrame rows; the custody-verified record of them travels with the frame:
+5. **Treat divergence as signal, not failure.** Under firewall #1 a worker that disagrees with quorum earns **equal trust** — divergence is never discarded. Since D19 (bundle schema v2), non-consensus payloads ride the bundle in a separate, basis-labeled section under the ANCHOR-OR-OMIT rule (a row ships only when its hash matches a signed artifact: an observation its own receipt, a diverged row the signed predicate, an outlier the tolerance block), so within the retention window they appear as REAL rows:
    ```python
-   diverged = df.attrs["diverged_units"]   # look HERE — units the run could not corroborate
+   diverged = df[df.integrity_basis == "diverged"]      # whole-unit disagreements
+   outliers = df[df.integrity_basis == "outlier"]       # outside the tolerance envelope
+   observations = df[df.integrity_basis == "observation"]  # observe-only extra replicas
    ```
-   To *analyze the contents* of divergent outputs, collect them live with the observe-all driver (`include="raw"`), or run the study observe-only (`builtin_process_only`) so no unit can diverge in the first place.
+   After the retention window (or on pre-D19 bundles) their payloads are gone and only the hash record remains: `df.attrs["diverged_units"]`. For guaranteed payload-level access, collect live with the observe-all driver (`include="raw"`), or run the study observe-only (`builtin_process_only`) — those replicas keep the full consensus-payload retention window.
    And a *low* network divergence rate (the footprint's `integrity_basis` counts) can mean genuine agreement — or an apparatus that discouraged disagreement. The equal-trust model exists so the rate reflects the former; it is worth checking.
 6. **Cite the anchor.** When a claim must be externally defensible, cite the Rekor entry so anyone can confirm the attestation existed without trusting you or us:
    > Attested in the public transparency log (Rekor) at **logIndex 1770786010**, integratedTime **2026-06-09T17:42:31Z** — independently checkable at the configured Rekor instance.
