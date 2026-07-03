@@ -898,6 +898,70 @@ def _record_benchmark_declaration(cfg, experiment_id: str, label: str) -> None:
         click.echo(f"WARNING: could not record the benchmark declaration: {e}", err=True)
 
 
+def _auto_benchmark(client, label: str) -> None:
+    """Score the finished run against its DECLARED reference, automatically —
+    the tail of `launch`/`run`: with `[benchmark] reference` in the config, no
+    flag or extra command establishes the benchmark; it exists when the run
+    does. Reads the declaration recorded at launch beside the run, exports +
+    verifies both bundles, scores, persists the same report the dashboard
+    reads (runs/<label>/benchmark_vs_<ref>.json). Best-effort: a benchmark
+    failure never fails the run — it says why and moves on (the dashboard's
+    first-view materialization is the retry)."""
+    try:
+        layout = RunLayout(label)
+    except ValueError:
+        return
+    decl_path = layout.dir / "benchmark_reference.json"
+    if not decl_path.exists():
+        return
+    try:
+        decl = json.loads(decl_path.read_text())
+        ref = str(decl["reference_experiment_id"])
+        exp_id = str(decl.get("experiment_id") or "")
+    except (OSError, ValueError, KeyError):
+        click.echo("WARNING: unreadable benchmark declaration — skipping the auto-score.", err=True)
+        return
+    out_path = layout.dir / f"benchmark_vs_{ref}.json"
+    if out_path.exists():
+        return  # a resumed run was already scored
+    click.echo(f"benchmark: scoring against {ref} …")
+    try:
+        from datetime import UTC, datetime
+
+        from auspexai_tenant.benchmark import drift_benchmark_bundles
+        from auspexai_tenant.evidence import verify_bundle
+
+        bundle = client.export(exp_id)
+        ref_bundle = client.export(ref)
+        for side, blob in (("observation", bundle), ("reference", ref_bundle)):
+            if not verify_bundle(blob).ok:
+                click.echo(
+                    f"WARNING: the {side} bundle failed verification — benchmark skipped "
+                    "(only custody-verified evidence is scored).",
+                    err=True,
+                )
+                return
+        report = drift_benchmark_bundles(bundle, ref_bundle)
+        record = {
+            "schema": "auspexai-drift-benchmark-report/v0",
+            "computed_at": datetime.now(UTC).isoformat(),
+            "observation": {"experiment_id": exp_id, "label": label},
+            "reference": {"experiment_id": ref, "label": decl.get("reference_label") or ref},
+            "report": report.to_dict(),
+        }
+        layout.dir.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(record, indent=2))
+        peak = f"{report.peak_eu:.2f} EU" if report.peak_eu is not None else "n/a"
+        breadth = f"{report.breadth:.0%}" if report.breadth is not None else "n/a"
+        click.echo(f"benchmark: peak {peak} · breadth {breadth} · saved {out_path}")
+    except (CoordinatorError, httpx.RequestError, OSError, ValueError) as e:
+        click.echo(
+            f"WARNING: could not auto-score ({e}); the dashboard scores it on first view, "
+            f"or: auspexai-tenant benchmark drift",
+            err=True,
+        )
+
+
 def _resolve_experiment(client, target: str) -> tuple[str, str]:
     """Resolve a run TARGET — a coordinator experiment id, a tenant label, or
     the literal 'latest' — to (experiment_id, label). 'latest' = the most
@@ -1177,6 +1241,7 @@ def experiment_run(
     click.echo(json.dumps(result.aggregate, indent=2, default=str))
     if result.attestation is not None:
         click.echo(f"attestation merkle_root: {result.attestation.merkle_root}")
+    _auto_benchmark(client, label)
 
 
 def _wait_for_approval(

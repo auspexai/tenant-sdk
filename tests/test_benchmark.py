@@ -297,3 +297,55 @@ def test_benchmark_declaration_parses_and_rejects_typos(tmp_path):
     )
     assert load_experiment_config(off).benchmark_reference == "exp-ref"
     assert load_experiment_config(off, profile="calibration").benchmark_reference is None
+
+
+def test_auto_benchmark_scores_declared_run_at_completion(tmp_path, monkeypatch, capsys):
+    # `launch`/`run` end with the benchmark established — no flag, no extra
+    # command: the recorded declaration drives an export→verify→score→persist.
+    import json as _json
+
+    import auspexai_tenant.cli as cli_mod
+
+    monkeypatch.setenv("AUSPEXAI_RUNS_DIR", str(tmp_path / "runs"))
+    run_dir = tmp_path / "runs" / "lab-x"
+    run_dir.mkdir(parents=True)
+    (run_dir / "benchmark_reference.json").write_text(
+        _json.dumps(
+            {
+                "schema": "auspexai-benchmark-declaration/v0",
+                "experiment_id": "exp-obs",
+                "label": "lab-x",
+                "reference_experiment_id": "exp-base",
+            }
+        )
+    )
+    bundles = {
+        "exp-obs": _bundle([_obs("p-a", "h2", 0.95, 20, [["x", 1]])]),
+        "exp-base": _bundle([_obs("p-a", "h1", 0.90, 20, [["x", 1]])]),
+    }
+
+    class _Client:
+        def export(self, exp_id):
+            return bundles[exp_id]
+
+    class _OkVerify:
+        ok = True
+
+    monkeypatch.setattr("auspexai_tenant.evidence.verify_bundle", lambda b: _OkVerify())
+    cli_mod._auto_benchmark(_Client(), "lab-x")
+    saved = _json.loads((run_dir / "benchmark_vs_exp-base.json").read_text())
+    assert saved["observation"]["experiment_id"] == "exp-obs"
+    assert saved["report"]["peak_eu"] is not None
+    out = capsys.readouterr().out
+    assert "benchmark: peak" in out
+    # Idempotent: a resumed run doesn't re-score.
+    cli_mod._auto_benchmark(_Client(), "lab-x")
+
+
+def test_auto_benchmark_is_silent_without_declaration(tmp_path, monkeypatch, capsys):
+    import auspexai_tenant.cli as cli_mod
+
+    monkeypatch.setenv("AUSPEXAI_RUNS_DIR", str(tmp_path / "runs"))
+    (tmp_path / "runs" / "lab-y").mkdir(parents=True)
+    cli_mod._auto_benchmark(object(), "lab-y")
+    assert "benchmark" not in capsys.readouterr().out
