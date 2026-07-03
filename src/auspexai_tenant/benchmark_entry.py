@@ -51,6 +51,7 @@ def build_entry(
     reference_bundle: dict[str, Any],
     tenant_id: str | None,
     key,  # TenantKey
+    note: str | None = None,
 ) -> dict[str, Any]:
     """A signed registry entry from a saved benchmark record + the two
     custody-verified bundles it was scored over. The caller has ALREADY
@@ -62,6 +63,9 @@ def build_entry(
         "published_at": datetime.now(UTC).isoformat(),
         "publisher_pubkey_hex": key.pubkey_hex,
         "tenant_id": tenant_id,
+        # One signed human sentence: what this run varied vs the baseline —
+        # the board renders it so a public reader needs no profile jargon.
+        "note": note,
         "observation": {
             **(record.get("observation") or {}),
             "manifest_hash": observation_bundle.get("manifest_hash"),

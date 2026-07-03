@@ -1535,20 +1535,29 @@ def benchmark() -> None:
     "--reference",
     "reference_id",
     default=None,
-    help="Which saved report to publish (default: the run's only/most recent one).",
+    help="The baseline to score/publish against (default: the run's declared "
+    "reference, or its only saved report).",
+)
+@click.option(
+    "--note",
+    default=None,
+    help="One human sentence explaining what this run varied vs the baseline — "
+    "rendered on the board, SIGNED with the entry.",
 )
 @_coord_opt
 @_key_opt
 def benchmark_publish(
-    target: str, reference_id: str | None, coordinator: str, key_path: Path
+    target: str, reference_id: str | None, note: str | None, coordinator: str, key_path: Path
 ) -> None:
-    """Publish a scored Drift-Benchmark result as a SIGNED registry entry.
+    """Publish a Drift-Benchmark result as a SIGNED registry entry.
 
     Publishing is a deliberate act (G5, drift_benchmark_design.md §6): this
-    re-exports + custody-verifies BOTH bundles, then signs a claim binding the
-    score to the two experiments' attestation anchors (Merkle roots + Rekor)
-    with YOUR tenant key. The entry file is what you hand the board curator —
-    nothing auto-publishes."""
+    exports + custody-verifies BOTH bundles, scores the run if no saved report
+    exists yet (historical runs publish in one step), then signs a claim
+    binding the score to the two experiments' attestation anchors with YOUR
+    tenant key. The entry file is what you hand the board curator — nothing
+    auto-publishes."""
+    from auspexai_tenant.benchmark import drift_benchmark_bundles
     from auspexai_tenant.benchmark_entry import build_entry, verify_entry
     from auspexai_tenant.evidence import verify_bundle
     from auspexai_tenant.runs import RunLayout, runs_base
@@ -1556,48 +1565,88 @@ def benchmark_publish(
     key = _load_key(key_path)
     client = _make_client(coordinator, key_path)
     exp_id, label = _resolve_experiment(client, target)
-    layout = RunLayout(label, base=runs_base(None))
+    # The same base every other surface resolves: [runs].dir (config walk-up)
+    # > $AUSPEXAI_RUNS_DIR > ./runs-if-exists > the stable per-user base.
+    try:
+        cfg_runs_dir = load_experiment_config(None).runs_dir
+    except (ValueError, OSError):
+        cfg_runs_dir = None
+    layout = RunLayout(label, base=runs_base(cfg_runs_dir))
+
+    # Resolve the reference: --reference > a single saved report > the
+    # declaration recorded at launch.
+    record = None
     reports = sorted(layout.dir.glob("benchmark_vs_*.json"))
     if reference_id:
-        reports = [p for p in reports if p.stem == f"benchmark_vs_{reference_id}"]
-    if not reports:
-        click.echo(
-            f"ERROR: no saved benchmark report under {layout.dir} — score the run first "
-            "(it happens automatically at launch, or: auspexai-tenant benchmark drift).",
-            err=True,
-        )
-        sys.exit(1)
-    if len(reports) > 1:
+        matching = [p for p in reports if p.stem == f"benchmark_vs_{reference_id}"]
+        record = json.loads(matching[0].read_text()) if matching else None
+    elif len(reports) == 1:
+        record = json.loads(reports[0].read_text())
+        reference_id = record["reference"]["experiment_id"]
+    elif len(reports) > 1:
         click.echo(
             "ERROR: multiple saved reports — pick one with --reference "
             f"({', '.join(p.stem.removeprefix('benchmark_vs_') for p in reports)})",
             err=True,
         )
         sys.exit(1)
-    record = json.loads(reports[0].read_text())
-    ref_id = record["reference"]["experiment_id"]
-    click.echo(f"collecting + verifying both bundles ({exp_id}, {ref_id}) …")
+    if reference_id is None:
+        decl_path = layout.dir / "benchmark_reference.json"
+        if decl_path.exists():
+            try:
+                reference_id = str(json.loads(decl_path.read_text())["reference_experiment_id"])
+            except (ValueError, KeyError, OSError):
+                pass
+    if reference_id is None:
+        click.echo(
+            "ERROR: no saved report and no declared reference for this run — "
+            "pass --reference <experiment-id>.",
+            err=True,
+        )
+        sys.exit(1)
+
+    click.echo(f"collecting + verifying both bundles ({exp_id}, {reference_id}) …")
     obs_bundle = _run(lambda: client.export(exp_id))
-    ref_bundle = _run(lambda: client.export(ref_id))
+    ref_bundle = _run(lambda: client.export(reference_id))
     for side, blob in (("observation", obs_bundle), ("reference", ref_bundle)):
         if not verify_bundle(blob).ok:
             click.echo(
                 f"ERROR: the {side} bundle failed verification — refusing to sign.", err=True
             )
             sys.exit(1)
+
+    if record is None:
+        # Historical / never-scored run: score it right here (the bundles are
+        # already in hand and verified) and persist the same report every other
+        # surface reads.
+        from datetime import UTC, datetime
+
+        report = drift_benchmark_bundles(obs_bundle, ref_bundle)
+        record = {
+            "schema": "auspexai-drift-benchmark-report/v0",
+            "computed_at": datetime.now(UTC).isoformat(),
+            "observation": {"experiment_id": exp_id, "label": label},
+            "reference": {"experiment_id": reference_id, "label": reference_id},
+            "report": report.to_dict(),
+        }
+        layout.dir.mkdir(parents=True, exist_ok=True)
+        (layout.dir / f"benchmark_vs_{reference_id}.json").write_text(json.dumps(record, indent=2))
+        click.echo(f"scored: peak {report.peak_eu} EU (report saved beside the run)")
+
     entry = build_entry(
         record=record,
         observation_bundle=obs_bundle,
         reference_bundle=ref_bundle,
         tenant_id=(obs_bundle.get("manifest") or {}).get("tenant_id"),
         key=key,
+        note=note,
     )
     payload = verify_entry(entry)
     assert payload is not None
-    out = layout.dir / f"benchmark_entry_{ref_id}.json"
+    out = layout.dir / f"benchmark_entry_{reference_id}.json"
     out.write_text(json.dumps(entry, indent=2))
     peak = payload["report"]["peak_eu"]
-    click.echo(f"signed entry: peak {peak} EU vs {ref_id}")
+    click.echo(f"signed entry: peak {peak} EU vs {reference_id}")
     click.echo(f"written: {out}")
     click.echo(
         "hand it to the board curator (e.g. commit it under your tenant repo's "
