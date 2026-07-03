@@ -752,6 +752,16 @@ def load_verified(
     # The apparatus footprint travels with the verified frame (firewall #2,
     # researcher-facing): df.attrs["governance_footprint"].
     df.attrs["governance_footprint"] = verification.governance_footprint
+    # Firewall #1: diverged units are VALID evidentiary data, but their payloads
+    # are never exported (the signed predicate carries unit ids + worker-signed
+    # result hashes only) — so they cannot be DataFrame ROWS. They travel as
+    # df.attrs["diverged_units"], the custody-verified record that those units
+    # could not be corroborated. (2026-07-03 correction: this guide/API pair
+    # previously implied a `diverged` row stratum that could never be non-empty.)
+    diverged_units = []
+    if data.get("attestation"):
+        diverged_units = _attestation_from_bundle(data["attestation"]).diverged_units or []
+    df.attrs["diverged_units"] = diverged_units
 
     # D16.1 Inc 3: surface the declared feature schema as the frame's data
     # dictionary. Read from the bundle's manifest — which verify_bundle just bound

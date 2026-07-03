@@ -8,6 +8,8 @@ envelope, never a second definition of it."""
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 from auspexai_tenant.benchmark import (
     DriftBenchmark,
     drift_benchmark,
@@ -221,3 +223,33 @@ def test_empty_bundle_side_is_named_not_silent():
     r = drift_benchmark_bundles(empty, ref_b)
     assert r.peak_eu is None
     assert any("no consensus results" in n for n in r.notes)
+
+
+def test_diverged_units_surface_from_the_signed_predicate(monkeypatch):
+    # Firewall #1: diverged results are valid evidentiary data — the bundle
+    # carries only their hashes, so the benchmark reports their existence per
+    # probe (signed evidence of within-run disagreement), never an EU score.
+
+    class _Att:
+        diverged_units: ClassVar[list[dict]] = [
+            {"unit_id": "u0", "result_hashes": ["a", "b"]},
+            {"unit_id": "u1", "result_hashes": ["c", "d"]},
+        ]
+
+    monkeypatch.setattr("auspexai_tenant.evidence._attestation_from_bundle", lambda blob: _Att())
+    obs_b = {
+        "manifest": {"feature_schema": SCHEMA},
+        "consensus_results": [],
+        "attestation": {"cose_b64": "x"},
+        "work_units": [
+            {"unit_id": "u0", "payload": {"probe_id": "p-a"}},
+            {"unit_id": "u1", "payload": {"probe_id": "p-b"}},
+        ],
+    }
+    ref_b = _bundle([_obs("p-a", "h1", 0.9, 20, [["x", 1]])])
+    r = drift_benchmark_bundles(obs_b, ref_b)
+    assert r.diverged_units_total == 2
+    assert r.diverged_by_key == {"p-a": 1, "p-b": 1}
+    text = format_report(r)
+    assert "within-run divergence" in text
+    assert any("could not corroborate" in n for n in r.notes)

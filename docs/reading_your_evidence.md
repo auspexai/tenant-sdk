@@ -68,10 +68,11 @@ df = evidence.load_verified("evidence.json")   # raises if anything fails to ver
    ```
 3. **Weight by replication + independence.** Carry N (replication) and the footprint's independence into your error bars, not just the point estimate. A `process_only` single-worker row is not a replicated one.
 4. **Correct for the apparatus footprint.** Treat it as a covariate to subtract, not noise to ignore — that is firewall #2's whole purpose: *"the network watched, and here is how much that mattered."*
-5. **Treat divergence as signal, not failure.** Under firewall #1 a worker that disagrees with quorum earns a *divergence receipt* and **equal trust** — it is never discarded. A `diverged` row that is otherwise fully attested is often the most interesting datapoint:
+5. **Treat divergence as signal, not failure.** Under firewall #1 a worker that disagrees with quorum earns **equal trust** — divergence is never discarded. Diverged units' *payloads* are not exported (only their worker-signed hashes ride the signed predicate), so they never appear as DataFrame rows; the custody-verified record of them travels with the frame:
    ```python
-   diverged = df[df.integrity_basis == "diverged"]   # look HERE — don't drop these
+   diverged = df.attrs["diverged_units"]   # look HERE — units the run could not corroborate
    ```
+   To *analyze the contents* of divergent outputs, collect them live with the observe-all driver (`include="raw"`), or run the study observe-only (`builtin_process_only`) so no unit can diverge in the first place.
    And a *low* network divergence rate (the footprint's `integrity_basis` counts) can mean genuine agreement — or an apparatus that discouraged disagreement. The equal-trust model exists so the rate reflects the former; it is worth checking.
 6. **Cite the anchor.** When a claim must be externally defensible, cite the Rekor entry so anyone can confirm the attestation existed without trusting you or us:
    > Attested in the public transparency log (Rekor) at **logIndex 1770786010**, integratedTime **2026-06-09T17:42:31Z** — independently checkable at the configured Rekor instance.

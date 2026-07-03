@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import json
 import statistics
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 BINARY_RULES = frozenset({"exact", "categorical_exact"})
@@ -173,6 +173,14 @@ class DriftBenchmark:
     byte_divergence_rate: float | None
     key_feature: str
     notes: tuple[str, ...] = field(default_factory=tuple)
+    # The WITHIN-RUN divergence overlay (bundle path only): units whose replicas
+    # disagreed under an agreement reducer, read from the SIGNED predicate's
+    # diverged_units. Their payloads are not exportable (hashes only), so they
+    # cannot be EU-scored — but their existence is custody-verified evidence
+    # that the run itself could not corroborate. An apparatus/stability signal,
+    # never folded into the drift-vs-reference scalar. {probe_key: diverged_count}
+    diverged_units_total: int | None = None
+    diverged_by_key: dict[str, int] | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -181,6 +189,8 @@ class DriftBenchmark:
             "byte_divergence_rate": self.byte_divergence_rate,
             "key_feature": self.key_feature,
             "notes": list(self.notes),
+            "diverged_units_total": self.diverged_units_total,
+            "diverged_by_key": self.diverged_by_key,
             "probes": [
                 {
                     "key": p.key,
@@ -335,6 +345,35 @@ def observations_from_bundle(bundle: dict) -> tuple[list[dict], dict[str, dict]]
     return payloads, schema
 
 
+def diverged_by_key_from_bundle(bundle: dict, key_feature: str = "probe_id") -> dict[str, int]:
+    """{probe_key: diverged-unit count} from the SIGNED predicate's
+    diverged_units, joined to probes via the bundle's work-unit INPUT payloads.
+    Firewall #1: a diverged result is valid, evidentiary data — its payload is
+    not exportable (hashes only), but its existence is signed evidence that the
+    run could not corroborate that unit. Empty when the attestation is absent
+    or nothing diverged."""
+    att = bundle.get("attestation")
+    if not isinstance(att, dict):
+        return {}
+    try:
+        from auspexai_tenant.evidence import _attestation_from_bundle
+
+        diverged = _attestation_from_bundle(att).diverged_units or []
+    except Exception:
+        return {}
+    unit_keys = {
+        w.get("unit_id"): _get_path(w.get("payload") or {}, key_feature)
+        for w in bundle.get("work_units") or []
+    }
+    out: dict[str, int] = {}
+    for d in diverged:
+        key = unit_keys.get(d.get("unit_id"))
+        out[str(key) if key is not None else "(unknown)"] = (
+            out.get(str(key) if key is not None else "(unknown)", 0) + 1
+        )
+    return out
+
+
 def drift_benchmark_bundles(
     bundle: dict,
     reference_bundle: dict,
@@ -348,6 +387,24 @@ def drift_benchmark_bundles(
     ref, ref_schema = observations_from_bundle(reference_bundle)
     schema = ref_schema or obs_schema
     report = drift_benchmark(obs, ref, schema, key_feature=key_feature)
+    diverged = diverged_by_key_from_bundle(bundle, key_feature=key_feature)
+    if diverged:
+        report = DriftBenchmark(
+            probes=report.probes,
+            peak_eu=report.peak_eu,
+            breadth=report.breadth,
+            byte_divergence_rate=report.byte_divergence_rate,
+            key_feature=report.key_feature,
+            notes=(
+                *report.notes,
+                "diverged units are signed evidence the run could not corroborate "
+                "those units (within-run disagreement) — payloads are not exported, "
+                "so they cannot be EU-scored; the count is reported, never folded "
+                "into the drift scalar",
+            ),
+            diverged_units_total=sum(diverged.values()),
+            diverged_by_key=diverged,
+        )
     empty_notes = tuple(
         f"the {label} bundle carries no consensus results — every unit diverged "
         "(0-receipt) or its payloads aged off; there is nothing custody-verified "
@@ -364,14 +421,12 @@ def drift_benchmark_bundles(
             byte_divergence_rate=report.byte_divergence_rate,
             key_feature=report.key_feature,
             notes=(*report.notes, *empty_notes),
+            diverged_units_total=report.diverged_units_total,
+            diverged_by_key=report.diverged_by_key,
         )
     if ref_schema and obs_schema and ref_schema != obs_schema:
-        report = DriftBenchmark(
-            probes=report.probes,
-            peak_eu=report.peak_eu,
-            breadth=report.breadth,
-            byte_divergence_rate=report.byte_divergence_rate,
-            key_feature=report.key_feature,
+        report = replace(
+            report,
             notes=(
                 *report.notes,
                 "feature schemas differ between the bundles; the REFERENCE bundle's "
@@ -392,6 +447,12 @@ def format_report(report: DriftBenchmark) -> str:
         f"{report.byte_divergence_rate:.0%}" if report.byte_divergence_rate is not None else "n/a"
     )
     lines.append(f"drift benchmark: peak {peak} EU  ·  {breadth}  ·  byte-divergence {overlay}")
+    if report.diverged_units_total:
+        per_key = " · ".join(f"{k}: {n}" for k, n in sorted((report.diverged_by_key or {}).items()))
+        lines.append(
+            f"  ⚠ within-run divergence (signed evidence, not EU-scorable): "
+            f"{report.diverged_units_total} unit(s) — {per_key}"
+        )
     lines.append("  (EU = envelope units: 1.0 = the calibrated noise floor; <1 within noise)")
     for p in report.probes:
         ppeak = f"{p.peak_eu:.2f}" if p.peak_eu is not None else "n/a"
