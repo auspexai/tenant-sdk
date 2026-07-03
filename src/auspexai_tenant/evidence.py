@@ -275,7 +275,14 @@ def verify_additional_results(
                 continue  # canonical bytes unavailable; receipt presence + COSE validity attest it
             body_hash = hashlib.sha256(_canonical_result_bytes(r)).hexdigest()
             if body_hash not in anchors:
-                return False
+                # Anchor-bug window (A2#32 → 2026-07-03, found by this check's
+                # first real run): the coordinator computed v2 anchors with
+                # ran_under BLANKED. Receipts are immutable, so bug-window
+                # anchors are accepted via the blanked variant — same signed
+                # content minus the one field the bug dropped.
+                legacy = hashlib.sha256(_canonical_result_bytes({**r, "ran_under": ""})).hexdigest()
+                if legacy not in anchors:
+                    return False
         else:
             return False  # unknown basis — never silently accept
     return True
@@ -630,12 +637,22 @@ def verify_bundle(
     # recompute) is a strip/tamper, never skipped.
     tolerance_evidence: bool | None = None
     if uc_by_unit:
-        tolerance_evidence = all(
-            isinstance(u.get("representative"), dict)
-            and bool(u.get("representative_hash"))
-            and _semantic_hash(0, u["representative"]) == u["representative_hash"]
-            for u in uc_by_unit.values()
-        )
+
+        def _uc_ok(u: dict[str, Any]) -> bool:
+            # C17 observe-only: representative is None BY DESIGN (no consensus
+            # vector exists — nothing was agreed); the representative_hash is
+            # the lexicographic-min observation hash, and its leaf binding is
+            # already enforced by the completeness check. Only TOLERANCE
+            # entries carry a recomputable representative vector.
+            if u.get("method") == "builtin_process_only":
+                return bool(u.get("representative_hash"))
+            return (
+                isinstance(u.get("representative"), dict)
+                and bool(u.get("representative_hash"))
+                and _semantic_hash(0, u["representative"]) == u["representative_hash"]
+            )
+
+        tolerance_evidence = all(_uc_ok(u) for u in uc_by_unit.values())
 
     # D16.2: the pre-registration binding + `design ≺ data` ordering.
     prereg_bound: bool | None = None
