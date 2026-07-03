@@ -1529,6 +1529,98 @@ def benchmark() -> None:
     models, and configurations (see docs/analyzing_your_results.md)."""
 
 
+@benchmark.command("publish")
+@click.argument("target")
+@click.option(
+    "--reference",
+    "reference_id",
+    default=None,
+    help="Which saved report to publish (default: the run's only/most recent one).",
+)
+@_coord_opt
+@_key_opt
+def benchmark_publish(
+    target: str, reference_id: str | None, coordinator: str, key_path: Path
+) -> None:
+    """Publish a scored Drift-Benchmark result as a SIGNED registry entry.
+
+    Publishing is a deliberate act (G5, drift_benchmark_design.md §6): this
+    re-exports + custody-verifies BOTH bundles, then signs a claim binding the
+    score to the two experiments' attestation anchors (Merkle roots + Rekor)
+    with YOUR tenant key. The entry file is what you hand the board curator —
+    nothing auto-publishes."""
+    from auspexai_tenant.benchmark_entry import build_entry, verify_entry
+    from auspexai_tenant.evidence import verify_bundle
+    from auspexai_tenant.runs import RunLayout, runs_base
+
+    key = _load_key(key_path)
+    client = _make_client(coordinator, key_path)
+    exp_id, label = _resolve_experiment(client, target)
+    layout = RunLayout(label, base=runs_base(None))
+    reports = sorted(layout.dir.glob("benchmark_vs_*.json"))
+    if reference_id:
+        reports = [p for p in reports if p.stem == f"benchmark_vs_{reference_id}"]
+    if not reports:
+        click.echo(
+            f"ERROR: no saved benchmark report under {layout.dir} — score the run first "
+            "(it happens automatically at launch, or: auspexai-tenant benchmark drift).",
+            err=True,
+        )
+        sys.exit(1)
+    if len(reports) > 1:
+        click.echo(
+            "ERROR: multiple saved reports — pick one with --reference "
+            f"({', '.join(p.stem.removeprefix('benchmark_vs_') for p in reports)})",
+            err=True,
+        )
+        sys.exit(1)
+    record = json.loads(reports[0].read_text())
+    ref_id = record["reference"]["experiment_id"]
+    click.echo(f"collecting + verifying both bundles ({exp_id}, {ref_id}) …")
+    obs_bundle = _run(lambda: client.export(exp_id))
+    ref_bundle = _run(lambda: client.export(ref_id))
+    for side, blob in (("observation", obs_bundle), ("reference", ref_bundle)):
+        if not verify_bundle(blob).ok:
+            click.echo(
+                f"ERROR: the {side} bundle failed verification — refusing to sign.", err=True
+            )
+            sys.exit(1)
+    entry = build_entry(
+        record=record,
+        observation_bundle=obs_bundle,
+        reference_bundle=ref_bundle,
+        tenant_id=(obs_bundle.get("manifest") or {}).get("tenant_id"),
+        key=key,
+    )
+    assert verify_entry(entry)
+    out = layout.dir / f"benchmark_entry_{ref_id}.json"
+    out.write_text(json.dumps(entry, indent=2))
+    peak = entry["report"]["peak_eu"]
+    click.echo(f"signed entry: peak {peak} EU vs {ref_id}")
+    click.echo(f"written: {out}")
+    click.echo(
+        "hand it to the board curator (e.g. commit it under your tenant repo's "
+        "published/ directory) — inclusion on the public board is curated, never automatic."
+    )
+
+
+@benchmark.command("verify-entry")
+@click.argument("entry_file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+def benchmark_verify_entry(entry_file: Path) -> None:
+    """Verify a published registry entry's signature (curator-side check)."""
+    from auspexai_tenant.benchmark_entry import verify_entry
+
+    entry = json.loads(entry_file.read_text())
+    if verify_entry(entry):
+        click.echo(
+            f"OK: signature valid (publisher {entry.get('publisher_pubkey_hex', '')[:16]}…, "
+            f"peak {entry.get('report', {}).get('peak_eu')} EU)"
+        )
+    else:
+        click.echo("FAILED: signature invalid or entry malformed", err=True)
+        sys.exit(1)
+
+
 @benchmark.command("drift")
 @click.argument("bundle", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.argument("reference", type=click.Path(exists=True, dir_okay=False, path_type=Path))

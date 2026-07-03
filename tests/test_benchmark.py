@@ -394,3 +394,55 @@ def test_additional_observation_rows_score_by_default_diverged_opt_in():
     calm = drift_benchmark_bundles(obs_b, ref_b)
     wild = drift_benchmark_bundles(obs_b, ref_b, include_diverged=True)
     assert (calm.peak_eu or 0) < (wild.peak_eu or 0)
+
+
+def test_registry_entry_signs_and_verifies_and_tamper_fails():
+    # G5: the entry is the researcher's SIGNED claim — pubkey inside the signed
+    # body (key identity is part of the claim), any field tamper breaks it.
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from auspexai_tenant.benchmark_entry import build_entry, verify_entry
+
+    class _Key:
+        def __init__(self):
+            self._k = Ed25519PrivateKey.generate()
+            self.pubkey_hex = self._k.public_key().public_bytes_raw().hex()
+
+        def sign(self, data: bytes) -> bytes:
+            return self._k.sign(data)
+
+    record = {
+        "computed_at": "2026-07-03T20:00:00+00:00",
+        "observation": {"experiment_id": "exp-obs", "label": "run-a"},
+        "reference": {"experiment_id": "exp-ref", "label": "calibration"},
+        "report": {
+            "peak_eu": 10.0,
+            "breadth": 1.0,
+            "byte_divergence_rate": 0.94,
+            "diverged_units_total": None,
+            "key_feature": "probe_id",
+            "probes": [{"key": "p-a", "peak_eu": 10.0, "beyond_envelope": True}],
+        },
+    }
+    bundle = {
+        "manifest_hash": "m" * 64,
+        "attestation": {
+            "merkle_root": "r" * 64,
+            "algorithm": "result-set-v1",
+            "rekor_log_index": 123,
+            "rekor_entry_uuid": "uuid-1",
+        },
+    }
+    entry = build_entry(
+        record=record,
+        observation_bundle=bundle,
+        reference_bundle=bundle,
+        tenant_id="vigiles-lab",
+        key=_Key(),
+    )
+    assert verify_entry(entry)
+    assert entry["observation"]["attestation"]["rekor_log_index"] == 123
+    tampered = {**entry, "report": {**entry["report"], "peak_eu": 0.1}}
+    assert not verify_entry(tampered)
+    swapped = {**entry, "publisher_pubkey_hex": "ab" * 32}
+    assert not verify_entry(swapped)
