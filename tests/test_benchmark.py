@@ -479,3 +479,73 @@ def test_config_delta_is_derived_not_written():
         "from": "greedy",
         "to": "sampling(temp=0.8,top_p=0.9,seeded)",
     }
+
+
+def test_grounded_verify_requires_coordinator_custody_binding():
+    # Researcher-push admission rule: publisher key must be the coordinator-
+    # attested COLLECTOR of both experiments — machine-checkable, no curator.
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from auspexai_tenant.benchmark_entry import build_entry, verify_entry_grounded
+
+    class _Key:
+        def __init__(self):
+            self._k = Ed25519PrivateKey.generate()
+            self.pubkey_hex = self._k.public_key().public_bytes_raw().hex()
+
+        def sign(self, d):
+            return self._k.sign(d)
+
+    coord = _Key()
+    publisher = _Key()
+
+    def bundle(mh):
+        rec = f"root|{publisher.pubkey_hex}|2026-07-03T22:00:00+00:00|{mh}".encode()
+        return {
+            "manifest_hash": mh,
+            "manifest": {"models": [{"id": "m"}], "feature_schema": {}},
+            "attestation": {"merkle_root": "r" * 64, "rekor_log_index": 1},
+            "transfer": {
+                "result_set_root": "root",
+                "collected_by_pubkey": publisher.pubkey_hex,
+                "collected_at": "2026-07-03T22:00:00+00:00",
+                "manifest_hash": mh,
+                "coordinator_pubkey_hex": coord.pubkey_hex,
+                "coordinator_signature": coord.sign(rec).hex(),
+            },
+        }
+
+    record = {
+        "computed_at": "t",
+        "observation": {"experiment_id": "exp-a", "label": "a"},
+        "reference": {"experiment_id": "exp-b", "label": "b"},
+        "report": {
+            "peak_eu": 1.0,
+            "breadth": 0.0,
+            "byte_divergence_rate": 0.0,
+            "diverged_units_total": None,
+            "key_feature": "probe_id",
+            "probes": [],
+        },
+    }
+    entry = build_entry(
+        record=record,
+        observation_bundle=bundle("a" * 64),
+        reference_bundle=bundle("b" * 64),
+        tenant_id="t",
+        key=publisher,
+    )
+    # Grounded iff the coordinator key is pinned.
+    assert verify_entry_grounded(entry, authorized_signers=(coord.pubkey_hex,)) is not None
+    assert verify_entry_grounded(entry, authorized_signers=("ab" * 32,)) is None
+    # A DIFFERENT publisher signing the same custody records must fail.
+    thief = _Key()
+    stolen = build_entry(
+        record=record,
+        observation_bundle=bundle("a" * 64),
+        reference_bundle=bundle("b" * 64),
+        tenant_id="t",
+        key=thief,
+    )
+    # custody binds `publisher`, thief signed the entry → collected_by mismatch.
+    assert verify_entry_grounded(stolen, authorized_signers=(coord.pubkey_hex,)) is None

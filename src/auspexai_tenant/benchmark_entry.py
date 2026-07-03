@@ -119,11 +119,16 @@ def build_entry(
             **(record.get("observation") or {}),
             "manifest_hash": observation_bundle.get("manifest_hash"),
             "attestation": _attestation_anchor(observation_bundle),
+            # The coordinator-signed custody record: proves the PUBLISHER's key
+            # holds attested custody of this experiment — the self-grounding
+            # that lets a machine (CI) admit entries with no human curator.
+            "custody": observation_bundle.get("transfer"),
         },
         "reference": {
             **(record.get("reference") or {}),
             "manifest_hash": reference_bundle.get("manifest_hash"),
             "attestation": _attestation_anchor(reference_bundle),
+            "custody": reference_bundle.get("transfer"),
         },
         "report": {
             "peak_eu": rep.get("peak_eu"),
@@ -172,3 +177,45 @@ def verify_entry(entry: dict[str, Any]) -> dict[str, Any] | None:
         return payload
     except (InvalidSignature, KeyError, ValueError, TypeError):
         return None
+
+
+def verify_entry_grounded(
+    entry: dict[str, Any], *, authorized_signers: tuple[str, ...] | None = None
+) -> dict[str, Any] | None:
+    """`verify_entry` + KEY GROUNDING: both embedded coordinator-signed custody
+    records must verify, bind the PUBLISHER's pubkey as collector, and match
+    each side's manifest_hash. A passing entry is fully self-grounding — no
+    human needs to check who the publisher is (the coordinator already
+    attested that this key holds custody of both experiments). This is the
+    admission rule the website CI runs; pass `authorized_signers` to pin the
+    coordinator key (defaults to the SDK's known public signers)."""
+    from auspexai_tenant.evidence import KNOWN_PUBLIC_SIGNERS
+
+    payload = verify_entry(entry)
+    if payload is None:
+        return None
+    signers = {s.lower() for s in (authorized_signers or KNOWN_PUBLIC_SIGNERS)}
+    for side in ("observation", "reference"):
+        block = payload.get(side) or {}
+        t = block.get("custody")
+        if not isinstance(t, dict):
+            return None
+        try:
+            record = (
+                f"{t['result_set_root']}|{t['collected_by_pubkey']}|"
+                f"{t['collected_at']}|{t['manifest_hash']}"
+            ).encode()
+            pub = Ed25519PublicKey.from_public_bytes(bytes.fromhex(t["coordinator_pubkey_hex"]))
+            pub.verify(bytes.fromhex(t["coordinator_signature"]), record)
+        except (InvalidSignature, KeyError, ValueError, TypeError):
+            return None
+        if t["coordinator_pubkey_hex"].lower() not in signers:
+            return None
+        if (
+            t.get("collected_by_pubkey", "").lower()
+            != payload.get("publisher_pubkey_hex", "").lower()
+        ):
+            return None
+        if t.get("manifest_hash") != block.get("manifest_hash"):
+            return None
+    return payload
