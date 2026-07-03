@@ -100,12 +100,25 @@ def test_sampling_without_knobs_stays_valid_at_v02():
 
 
 @pytest.mark.parametrize("kind", ["builtin_hash_agreement", "builtin_within_cell_tolerance"])
-def test_sampling_incoherent_with_agreement_reducer(kind):
-    # The §3c coherence gate, mirrored at build (also enforced at coordinator submit).
+def test_sampling_incoherent_with_agreement_reducer_above_repl1(kind):
+    # The §3c coherence gate, mirrored at build (also enforced at coordinator
+    # submit): at replication_factor > 1 the agreement machinery would engage
+    # on legitimately-differing sampled replicas. (Fixture replication is 3.)
     m = _sampling_manifest()
     m["reducer"] = {"kind": kind}
     with pytest.raises(ValidationError, match="incoherent with the agreement"):
         Manifest.model_validate(m)
+
+
+@pytest.mark.parametrize("kind", ["builtin_hash_agreement", "builtin_within_cell_tolerance"])
+def test_sampling_with_agreement_reducer_coherent_at_repl1(kind):
+    # repl-1 = process-only: the reducer is dormant (no peer), each replica an
+    # independent sample — the declarable seeded-sampling shape (memo §3c). The
+    # coordinator re-checks against the post-A'-floor effective target.
+    m = _sampling_manifest()
+    m["reducer"] = {"kind": kind}
+    m["replication_factor"] = 1
+    Manifest.model_validate(m)
 
 
 def test_v05_json_schema_mirrors_model():

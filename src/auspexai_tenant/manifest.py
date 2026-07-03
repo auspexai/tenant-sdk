@@ -486,19 +486,27 @@ class Manifest(BaseModel):
     def _sampling_coherent_with_reducer(self) -> Manifest:
         """The §3c coherence gate, mirrored at build (the D16.2 precedent:
         enforced here AND at coordinator submit). Sampled replicas legitimately
-        differ, so an agreement reducer would either spuriously fail or falsely
-        claim corroboration — sampling requires a non-agreement collection mode
-        (process-only / a distributional fold via a custom reducer)."""
+        differ, so ENGAGING cross-replica agreement machinery would spuriously
+        fail or falsely claim corroboration. The machinery is dormant exactly at
+        replication_factor 1 (no peer — every unit settles process_only: each
+        replica an independent sample), so sampling + an agreement reducer is
+        coherent ONLY there. The coordinator re-checks against the POST-A'-FLOOR
+        effective target (a sub-T2 tenant's repl-1 request floors UP), so this
+        build-time check on the requested factor is the best-effort mirror, not
+        the authority."""
         det = self.inference_determinism
         if (
             det is not None
             and det.is_sampling
+            and self.replication_factor > 1
             and self.reducer.kind in ("builtin_hash_agreement", "builtin_within_cell_tolerance")
         ):
             raise ValueError(
-                f"seeded sampling (temperature > 0) is incoherent with the agreement "
-                f"reducer {self.reducer.kind!r} — sampled replicas legitimately differ; "
-                "declare a non-agreement collection mode (inference_determinism memo §3c)"
+                f"seeded sampling (temperature > 0) at replication_factor "
+                f"{self.replication_factor} is incoherent with the agreement reducer "
+                f"{self.reducer.kind!r} — sampled replicas legitimately differ; declare "
+                "replication_factor 1 (process-only: each replica an independent sample) "
+                "or a non-agreement collection mode (inference_determinism memo §3c)"
             )
         return self
 
