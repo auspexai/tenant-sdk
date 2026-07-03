@@ -239,6 +239,17 @@ config re-run ≈ 0 EU · seeded sampling (temp 0.8) ≈ 6.7 EU on the open-ende
 probe only · a different model ≈ 10 EU panel-wide.
 
 
+### Getting a score: declare once, scored automatically
+
+The primary path is declarative: add `[benchmark] reference = "<experiment-id>"`
+to your `experiment.toml` (profiles opt out with `""`), and every `experiment
+launch` scores the finished run against that baseline automatically — the report
+saves beside the run and the dashboard's Benchmark tab shows it with no action.
+`auspexai-tenant benchmark publish <run>` then submits a signed, self-grounding
+entry to the public board (machine-admitted; `--no-submit` to keep it local).
+`benchmark drift BUNDLE REF` below is the AD-HOC escape hatch for one-off
+comparisons and historical runs.
+
 ### Non-consensus evidence in the benchmark (D19)
 
 Observe-only extra replicas (`integrity_basis == "observation"`) join the

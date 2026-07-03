@@ -1552,8 +1552,10 @@ def benchmark_publish(
     exports + custody-verifies BOTH bundles, scores the run if no saved report
     exists yet (historical runs publish in one step), then signs a claim
     binding the score to the two experiments' attestation anchors with YOUR
-    tenant key. The entry file is what you hand the board curator — nothing
-    auto-publishes."""
+    tenant key, and SUBMITS it to the public board automatically (a courier
+    Worker opens the website PR; CI's grounded admission rule verifies and
+    auto-merges — machines admit, no curator). --no-submit writes the signed
+    entry file only."""
     from auspexai_tenant.benchmark import drift_benchmark_bundles
     from auspexai_tenant.benchmark_entry import build_entry, verify_entry
     from auspexai_tenant.evidence import verify_bundle
@@ -1682,7 +1684,7 @@ def benchmark_publish(
 @benchmark.command("verify-entry")
 @click.argument("entry_file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 def benchmark_verify_entry(entry_file: Path) -> None:
-    """Verify a published registry entry's signature (curator-side check)."""
+    """Re-verify any published entry's signature + shape (anyone can run this)."""
     from auspexai_tenant.benchmark_entry import verify_entry
 
     entry = json.loads(entry_file.read_text())

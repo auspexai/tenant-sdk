@@ -153,6 +153,7 @@ verifies all of it independently:
 | `key` | Ed25519 tenant keypair (generate, pubkey) |
 | `manifest` | validate, sign, upload an experiment manifest |
 | `experiment` | build, submit, launch (one-command lifecycle), list, status, run (autonomic driver), results, receipts, attestation, reduce, export, deviate (declare a signed deviation from the pre-registered design) |
+| `benchmark` | Score drift in envelope units vs a declared reference; `publish` submits a signed, self-grounding entry to the public board (machine-admitted). Declare `[benchmark] reference` once in `experiment.toml` and `launch` scores each run automatically. |
 | `bundle` | verify a saved evidence bundle offline; write it as a CSV/Parquet table |
 | `model` | browse the network model catalog |
 | `receipts` | decode/pretty-print CBOR receipts |

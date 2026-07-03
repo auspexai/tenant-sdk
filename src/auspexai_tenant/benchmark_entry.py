@@ -3,7 +3,7 @@
 Publishing is a DELIBERATE act: `benchmark publish` wraps a scored report +
 both experiments' attestation anchors into a tenant-key-signed entry — the
 researcher's own claim, verifiable by anyone. The public board renders a
-curated registry of these entries; every cell traces to signed evidence
+machine-admitted registry of these entries; every cell traces to signed evidence
 (experiment ids, attestation Merkle roots, Rekor inclusion), which is the
 board's differentiator: don't trust the chart — verify the cell.
 
