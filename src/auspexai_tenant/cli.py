@@ -1137,11 +1137,16 @@ def experiment_run(
         click.echo(f"attestation merkle_root: {result.attestation.merkle_root}")
 
 
-def _wait_for_approval(client, experiment_id: str, poll_interval: float) -> str:
+def _wait_for_approval(
+    client, experiment_id: str, poll_interval: float, *, resumable: bool = False
+) -> str:
     """Block until the experiment leaves the pending (`submitted`) state — the
     driver can only submit work units once it is approved/paused, so `launch`
     waits here rather than 409-ing the drive into an orphaned experiment. Returns
-    the go-status; exits on a terminal status. Ctrl-C-safe (re-run to resume)."""
+    the go-status; exits on a terminal status. A Ctrl-C here propagates to the
+    caller (`launch`), whose D14 handler aborts the submitted experiment by
+    default — a killed launch must not leave a silent orphan that auto-approves
+    as a driverless run; `resumable` only selects the announced hint."""
     waiting = {"submitted", "pending", "draft"}
     terminal = {"completed", "aborted", "failed", "expired", "rejected", "declined"}
     announced = False
@@ -1157,9 +1162,14 @@ def _wait_for_approval(client, experiment_id: str, poll_interval: float) -> str:
         if status not in waiting:
             return status or "approved"
         if not announced:
+            hint = (
+                "Ctrl-C leaves it submitted; drive it after approval with `experiment run latest`"
+                if resumable
+                else "Ctrl-C aborts it"
+            )
             click.echo(
                 "Waiting for a maintainer to approve it — approve at "
-                "https://ops.auspexai.network (Ctrl-C is safe; re-run to resume)."
+                f"https://ops.auspexai.network ({hint})."
             )
             announced = True
         time.sleep(poll_interval)
@@ -1301,7 +1311,36 @@ def experiment_launch(
     click.echo(f"submitted {label}  ({experiment_id})")
     # Wait for the maintainer-approval gate before driving: the driver can only
     # submit work units once the experiment is approved/paused (a 409 otherwise).
-    status = _wait_for_approval(client, experiment_id, poll_interval)
+    try:
+        status = _wait_for_approval(client, experiment_id, poll_interval, resumable=resumable)
+    except KeyboardInterrupt:
+        # D14 tail: a Ctrl-C in the submit→approval window previously exited with
+        # the experiment still submitted server-side, which then auto-approved as
+        # a driverless orphan (exp-oK4PrkRP). Same semantics as the drive-loop
+        # handler below: abort by default, --resumable opts out. SUBMITTED →
+        # ABORTED is a valid researcher transition, so this never 409s in the
+        # normal case.
+        from auspexai_tenant.experiment import Experiment, LifecycleConflictError
+
+        if resumable:
+            click.echo(
+                f"\ninterrupted — {experiment_id} left submitted server-side; once "
+                f"approved, drive it with `auspexai-tenant experiment run {label}`.",
+                err=True,
+            )
+            sys.exit(130)
+        click.echo(f"\ninterrupted — aborting {experiment_id} …", err=True)
+        try:
+            Experiment(coordinator, _load_key(key_path), experiment_id).abort()
+            click.echo(f"aborted {experiment_id}.", err=True)
+        except LifecycleConflictError:
+            click.echo(f"{experiment_id} was already terminal.", err=True)
+        except (CoordinatorError, httpx.RequestError) as e:
+            click.echo(
+                f"WARNING: couldn't abort {experiment_id} ({e}); abort it from the dashboard.",
+                err=True,
+            )
+        sys.exit(130)
     click.echo(f"approved ({status}) — driving.")
     ctx.invoke(
         experiment_run,

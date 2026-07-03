@@ -9,6 +9,7 @@ two resolution guards.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 from click.testing import CliRunner
@@ -75,3 +76,87 @@ def test_launch_resolves_pkg_next_to_toml_from_subdir(
     # Resolution succeeded — neither guard fired (it failed later, on build/submit).
     assert "no experiment.toml found" not in r.output
     assert "package dir not found" not in r.output
+
+
+# ── D14 tail: Ctrl-C in the submit→approval window (v0.6.25) ─────────────────
+#
+# A Ctrl-C while `launch` waits for maintainer approval previously exited with
+# the experiment still submitted server-side — it then auto-approved as a
+# driverless orphan (exp-oK4PrkRP). The launch handler now mirrors the
+# drive-loop D14 semantics: abort by default; --resumable leaves it submitted.
+
+
+class _AbortRecorder:
+    aborted: ClassVar[list[str]] = []
+
+    def __init__(self, coordinator: str, key, experiment_id: str) -> None:
+        self._id = experiment_id
+
+    def abort(self) -> dict:
+        _AbortRecorder.aborted.append(self._id)
+        return {"status": "aborted"}
+
+
+def _launch_repo(tmp_path: Path) -> None:
+    (tmp_path / "experiment.toml").write_text(
+        '[experiment]\nlabel = "x"\n[driver]\nentrypoint = "d:b"\n'
+    )
+    (tmp_path / "pkg").mkdir()
+
+
+def _patch_launch_through_submit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub the build/submit/client legs so `launch` reaches the approval wait."""
+    from click.testing import CliRunner as _  # noqa: F401  (keep import local pattern)
+
+    import auspexai_tenant.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod.experiment_build, "callback", lambda **kw: None)
+    monkeypatch.setattr(cli_mod.experiment_submit, "callback", lambda **kw: None)
+    monkeypatch.setattr(cli_mod, "_make_client", lambda coordinator, key_path: object())
+    monkeypatch.setattr(cli_mod, "_resolve_experiment", lambda client, target: ("exp-1", "x"))
+    monkeypatch.setattr(cli_mod, "_load_key", lambda key_path: object())
+
+
+def test_launch_ctrl_c_during_approval_wait_aborts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import auspexai_tenant.cli as cli_mod
+    import auspexai_tenant.experiment as experiment_mod
+
+    _launch_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    _patch_launch_through_submit(monkeypatch)
+
+    def _interrupted_wait(client, experiment_id, poll_interval, *, resumable=False):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli_mod, "_wait_for_approval", _interrupted_wait)
+    _AbortRecorder.aborted = []
+    monkeypatch.setattr(experiment_mod, "Experiment", _AbortRecorder)
+
+    r = CliRunner().invoke(main, ["experiment", "launch"], standalone_mode=False)
+    assert isinstance(r.exception, SystemExit) and r.exception.code == 130
+    assert _AbortRecorder.aborted == ["exp-1"]  # the orphan is aborted, not left
+
+
+def test_launch_ctrl_c_resumable_leaves_submitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import auspexai_tenant.cli as cli_mod
+    import auspexai_tenant.experiment as experiment_mod
+
+    _launch_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    _patch_launch_through_submit(monkeypatch)
+
+    def _interrupted_wait(client, experiment_id, poll_interval, *, resumable=False):
+        assert resumable is True  # the flag reaches the wait's announced hint
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli_mod, "_wait_for_approval", _interrupted_wait)
+    _AbortRecorder.aborted = []
+    monkeypatch.setattr(experiment_mod, "Experiment", _AbortRecorder)
+
+    r = CliRunner().invoke(main, ["experiment", "launch", "--resumable"], standalone_mode=False)
+    assert isinstance(r.exception, SystemExit) and r.exception.code == 130
+    assert _AbortRecorder.aborted == []  # left submitted server-side by request
