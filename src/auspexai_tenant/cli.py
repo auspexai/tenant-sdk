@@ -1538,10 +1538,13 @@ def benchmark() -> None:
     help="The baseline to score/publish against (default: the run's declared "
     "reference, or its only saved report).",
 )
+@click.option(
+    "--no-submit", is_flag=True, help="Sign + write the entry only; skip board submission."
+)
 @_coord_opt
 @_key_opt
 def benchmark_publish(
-    target: str, reference_id: str | None, coordinator: str, key_path: Path
+    target: str, reference_id: str | None, no_submit: bool, coordinator: str, key_path: Path
 ) -> None:
     """Publish a Drift-Benchmark result as a SIGNED registry entry.
 
@@ -1643,10 +1646,37 @@ def benchmark_publish(
     peak = payload["report"]["peak_eu"]
     click.echo(f"signed entry: peak {peak} EU vs {reference_id}")
     click.echo(f"written: {out}")
-    click.echo(
-        "hand it to the board curator (e.g. commit it under your tenant repo's "
-        "published/ directory) — inclusion on the public board is curated, never automatic."
+    if no_submit:
+        return
+    # One-command publish: the entry is self-grounding, so submission is a
+    # dumb courier (a Worker opens the website PR; CI runs the grounded
+    # admission rule and merges only on green — machines admit, no curator).
+    submit_url = os.environ.get(
+        "AUSPEXAI_BOARD_SUBMIT_URL", "https://board.auspexai.network/submit"
     )
+    click.echo(f"submitting to the board ({submit_url}) …")
+    try:
+        resp = httpx.post(submit_url, json=entry, timeout=30)
+        body = (
+            resp.json()
+            if resp.headers.get("content-type", "").startswith("application/json")
+            else {}
+        )
+        if resp.status_code == 200 and body.get("status") == "submitted":
+            click.echo(f"submitted — admission PR: {body.get('pr')}")
+            click.echo(
+                "CI verifies the entry's grounding and merges on green; the board updates itself."
+            )
+        elif body.get("status") == "already-submitted":
+            click.echo("already submitted (identical entry) — nothing to do.")
+        else:
+            raise httpx.HTTPError(f"HTTP {resp.status_code}")
+    except (httpx.HTTPError, ValueError) as e:
+        click.echo(
+            f"WARNING: submission failed ({e}). The signed entry is safe at {out} — "
+            "submit it as a PR adding the file under entries/ in auspexai/website.",
+            err=True,
+        )
 
 
 @benchmark.command("verify-entry")
