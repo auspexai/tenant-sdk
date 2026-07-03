@@ -58,6 +58,8 @@ def test_journal_path_auto_vs_explicit(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("AUSPEXAI_RUNS_DIR", raising=False)
     # auto → the shared per-run layout: runs/<label>/run.journal (beside the bundle)
     (tmp_path / "experiment.toml").write_text('[driver]\njournal = "auto"\n')
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "runs").mkdir()  # repo-local workflow (else the stable base)
     assert load_experiment_config(tmp_path).journal_path("vig-1") == Path("runs/vig-1/run.journal")
     # an explicit [driver].journal still wins verbatim
     (tmp_path / "experiment.toml").write_text('[driver]\njournal = "runs/my.journal"\n')

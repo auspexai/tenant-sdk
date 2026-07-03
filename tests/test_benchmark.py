@@ -8,6 +8,7 @@ envelope, never a second definition of it."""
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import ClassVar
 
 from auspexai_tenant.benchmark import (
@@ -349,3 +350,17 @@ def test_auto_benchmark_is_silent_without_declaration(tmp_path, monkeypatch, cap
     (tmp_path / "runs" / "lab-y").mkdir(parents=True)
     cli_mod._auto_benchmark(object(), "lab-y")
     assert "benchmark" not in capsys.readouterr().out
+
+
+def test_runs_base_falls_back_to_stable_path_not_cwd(tmp_path, monkeypatch):
+    # The 2026-07-03 live lesson: a cwd-relative base is unreadable by any
+    # other process. With no config, no env, and no existing ./runs, the base
+    # is the stable per-user path both the CLI and the dashboard resolve.
+    from auspexai_tenant.runs import runs_base, stable_runs_base
+
+    monkeypatch.delenv("AUSPEXAI_RUNS_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)  # no ./runs here
+    assert runs_base(None) == stable_runs_base()
+    # An existing ./runs keeps the repo-local workflow working.
+    (tmp_path / "runs").mkdir()
+    assert runs_base(None) == Path("runs")

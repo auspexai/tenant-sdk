@@ -876,7 +876,9 @@ def _record_benchmark_declaration(cfg, experiment_id: str, label: str) -> None:
     try:
         from datetime import UTC, datetime
 
-        layout = RunLayout(label)
+        from auspexai_tenant.runs import runs_base
+
+        layout = RunLayout(label, base=runs_base(cfg.runs_dir))
         layout.dir.mkdir(parents=True, exist_ok=True)
         (layout.dir / "benchmark_reference.json").write_text(
             json.dumps(
@@ -898,7 +900,7 @@ def _record_benchmark_declaration(cfg, experiment_id: str, label: str) -> None:
         click.echo(f"WARNING: could not record the benchmark declaration: {e}", err=True)
 
 
-def _auto_benchmark(client, label: str) -> None:
+def _auto_benchmark(client, label: str, runs_dir: str | None = None) -> None:
     """Score the finished run against its DECLARED reference, automatically —
     the tail of `launch`/`run`: with `[benchmark] reference` in the config, no
     flag or extra command establishes the benchmark; it exists when the run
@@ -907,8 +909,10 @@ def _auto_benchmark(client, label: str) -> None:
     reads (runs/<label>/benchmark_vs_<ref>.json). Best-effort: a benchmark
     failure never fails the run — it says why and moves on (the dashboard's
     first-view materialization is the retry)."""
+    from auspexai_tenant.runs import runs_base
+
     try:
-        layout = RunLayout(label)
+        layout = RunLayout(label, base=runs_base(runs_dir))
     except ValueError:
         return
     decl_path = layout.dir / "benchmark_reference.json"
@@ -1241,7 +1245,7 @@ def experiment_run(
     click.echo(json.dumps(result.aggregate, indent=2, default=str))
     if result.attestation is not None:
         click.echo(f"attestation merkle_root: {result.attestation.merkle_root}")
-    _auto_benchmark(client, label)
+    _auto_benchmark(client, label, runs_dir=cfg.runs_dir)
 
 
 def _wait_for_approval(

@@ -14,8 +14,16 @@ import pytest
 from auspexai_tenant.runs import RunLayout, runs_base
 
 
-def test_runs_base_default(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_runs_base_default(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # No config, no env: an EXISTING ./runs keeps the repo-local workflow; a
+    # fresh context resolves the stable per-user base (cwd-relative bases are
+    # unreadable by other processes — the 2026-07-03 dashboard lesson).
+    from auspexai_tenant.runs import stable_runs_base
+
     monkeypatch.delenv("AUSPEXAI_RUNS_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    assert runs_base() == stable_runs_base()
+    (tmp_path / "runs").mkdir()
     assert runs_base() == Path("runs")
 
 
@@ -35,8 +43,10 @@ def test_runs_base_expands_user(monkeypatch: pytest.MonkeyPatch) -> None:
     assert runs_base("~/runs") == Path.home() / "runs"
 
 
-def test_layout_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_layout_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.delenv("AUSPEXAI_RUNS_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "runs").mkdir()  # repo-local workflow
     lay = RunLayout("drift-a1")
     assert lay.dir == Path("runs/drift-a1")
     assert lay.bundle_path() == Path("runs/drift-a1/bundle.json")

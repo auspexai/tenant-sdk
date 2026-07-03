@@ -101,6 +101,7 @@ def test_experiment_export_default_lands_in_runs_layout(
 
     monkeypatch.setattr(cli_mod, "_make_client", lambda c, k: FakeClient())
     monkeypatch.chdir(tmp_path)
+    (tmp_path / "runs").mkdir()  # repo-local workflow (else the stable base)
     result = CliRunner().invoke(main, ["experiment", "export", "exp-x", "--no-verify"])
     assert result.exit_code == 0, result.output
     assert (tmp_path / "runs" / "drift-a1" / "bundle.json").exists()

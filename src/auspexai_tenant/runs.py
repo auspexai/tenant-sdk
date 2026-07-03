@@ -10,7 +10,15 @@ Layout: ``<base>/<label>/{bundle.json, results.json, run.journal}`` — one
 directory per run, keyed by the tenant **label** (the researcher-authored,
 forever-unique name = ``manifest.experiment_id``; the coordinator experiment id
 maps to it via ``_resolve_experiment``). Base precedence: an explicit configured
-dir (``experiment.toml`` ``[runs].dir``) > ``$AUSPEXAI_RUNS_DIR`` > ``./runs``.
+dir (``experiment.toml`` ``[runs].dir``) > ``$AUSPEXAI_RUNS_DIR`` > ``./runs``
+**when it already exists** (repo-local workflow compat) > the stable per-user
+default ``~/.local/share/auspexai-tenant/runs``.
+
+The stable default exists because a cwd-relative base is unreadable by any
+OTHER process (2026-07-03, live: `launch` wrote a benchmark beside the run in
+``<cwd>/runs`` and the dashboard — scanning its own base — reported "no
+benchmark" for a scored run). Services must never depend on a CLI's cwd; a
+tenant that wants a repo-local base declares ``[runs].dir`` explicitly.
 """
 
 from __future__ import annotations
@@ -34,7 +42,16 @@ def runs_base(configured: str | os.PathLike[str] | None = None) -> Path:
     env = os.environ.get(RUNS_DIR_ENV)
     if env:
         return Path(env).expanduser()
-    return Path(DEFAULT_RUNS_DIRNAME)
+    cwd_runs = Path(DEFAULT_RUNS_DIRNAME)
+    if cwd_runs.is_dir():
+        return cwd_runs  # repo-local compat: an existing ./runs keeps working
+    return stable_runs_base()
+
+
+def stable_runs_base() -> Path:
+    """The cwd-independent per-user base — what a fresh context resolves to,
+    and what OTHER processes (the dashboard) can always find."""
+    return Path.home() / ".local" / "share" / "auspexai-tenant" / "runs"
 
 
 class RunLayout:
