@@ -549,3 +549,20 @@ def test_grounded_verify_requires_coordinator_custody_binding():
     )
     # custody binds `publisher`, thief signed the entry → collected_by mismatch.
     assert verify_entry_grounded(stolen, authorized_signers=(coord.pubkey_hex,)) is None
+
+
+def test_error_code_parses_the_real_nested_envelope():
+    # The 2026-07-04 resume-replay 409: the coordinator nests under "detail",
+    # so the typed-conflict parse never matched and resume idempotency was
+    # dead code. Both shapes must parse.
+    import httpx
+
+    from auspexai_tenant.experiment import _error_code
+
+    nested = httpx.Response(
+        409, json={"detail": {"error": {"code": "unit_id_already_submitted", "message": "x"}}}
+    )
+    bare = httpx.Response(409, json={"error": {"code": "max_units_exceeded"}})
+    assert _error_code(nested) == "unit_id_already_submitted"
+    assert _error_code(bare) == "max_units_exceeded"
+    assert _error_code(httpx.Response(409, text="<html>")) is None

@@ -1141,6 +1141,15 @@ def experiment_run(
     from auspexai_tenant.wake import SseWake, sse_line_source
 
     cfg = load_experiment_config(config_path, profile=profile)
+    if profile is None and cfg.available_profiles:
+        # D21c: the 2026-07-04 footgun — a no-profile resume silently took the
+        # DEFAULT driver cadence + duration (4x rounds, short clock).
+        click.echo(
+            "WARNING: no --profile given — driver settings (cadence, duration, unit "
+            "prefix) come from the TOP-LEVEL config. If this run was launched with a "
+            f"profile, resume with it (available: {', '.join(cfg.available_profiles)}).",
+            err=True,
+        )
     # [driver].path → on sys.path so the entrypoint module (e.g. a `driver/` subdir)
     # imports regardless of cwd; lets `run`/`launch` work from the repo root with no
     # `cd`. Resolved relative to the experiment.toml the walk-up found.
@@ -1391,27 +1400,42 @@ def experiment_launch(
             sys.exit(1)
         pkg_dir = cfg.source_path.parent / "pkg"
     if not pkg_dir.is_dir():
+        if str(pkg_dir) in (cfg.available_profiles or []):
+            click.echo(
+                f"ERROR: '{pkg_dir}' is a PROFILE, not a package dir — you want:\n"
+                f"  auspexai-tenant experiment launch --profile {pkg_dir}",
+                err=True,
+            )
+            sys.exit(1)
         click.echo(f"ERROR: package dir not found: {pkg_dir} — pass PKG_DIR explicitly.", err=True)
         sys.exit(1)
     # Key precedence: explicit --key > [experiment].key_path > the default key path.
     if key_path == DEFAULT_KEY_PATH and cfg.key_path:
         key_path = Path(cfg.key_path).expanduser()
 
+    # Per-invocation manifest scratch (D21b): concurrent launches interleaved
+    # writes into the shared pkg/manifest.json (the 2026-07-03 corrupted-JSON
+    # race). Each launch builds+submits its OWN file, then cleans it up.
+    scratch_name = f"manifest.launch-{os.getpid()}.json"
     ctx.invoke(
         experiment_build,
         pkg_dir=pkg_dir,
         config_path=config_path,
         profile=profile,
         exact_label=exact_label,
-        out_path=None,
+        out_path=pkg_dir / scratch_name,
     )
-    ctx.invoke(
-        experiment_submit,
-        pkg_dir=pkg_dir,
-        manifest_name="manifest.json",
-        coordinator=coordinator,
-        key_path=key_path,
-    )
+    try:
+        ctx.invoke(
+            experiment_submit,
+            pkg_dir=pkg_dir,
+            manifest_name=scratch_name,
+            coordinator=coordinator,
+            key_path=key_path,
+        )
+    finally:
+        for leftover in (pkg_dir / scratch_name, pkg_dir / (scratch_name + ".sig")):
+            leftover.unlink(missing_ok=True)
     client = _make_client(coordinator, key_path)
     experiment_id, label = _resolve_experiment(client, "latest")
     _record_benchmark_declaration(cfg, experiment_id, label)
@@ -1556,6 +1580,13 @@ def benchmark_publish(
     Worker opens the website PR; CI's grounded admission rule verifies and
     auto-merges — machines admit, no curator). --no-submit writes the signed
     entry file only."""
+    if "/" in target:
+        click.echo(
+            f"ERROR: '{target}' looks like a PATH — pass the experiment LABEL or "
+            "exp- id instead (see: auspexai-tenant experiment list).",
+            err=True,
+        )
+        sys.exit(1)
     from auspexai_tenant.benchmark import drift_benchmark_bundles
     from auspexai_tenant.benchmark_entry import build_entry, verify_entry
     from auspexai_tenant.evidence import verify_bundle

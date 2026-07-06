@@ -132,6 +132,15 @@ def _error_code(response: httpx.Response) -> str | None:
         return None
     if not isinstance(body, dict):
         return None
+    # The coordinator's HTTPException envelope nests under "detail"
+    # ({"detail": {"error": {...}}}); accept the bare shape too. This mismatch
+    # made every typed 409 (unit_id_already_submitted / max_units_exceeded /
+    # submissions_finalized) fall through to generic CoordinatorError — the
+    # driver's resume idempotency was dead code until the 2026-07-04 campaign
+    # exposed it (the wq2-prefix workaround retires with this fix).
+    detail = body.get("detail")
+    if isinstance(detail, dict) and "error" in detail:
+        body = detail
     error = body.get("error")
     return error.get("code") if isinstance(error, dict) else None
 
