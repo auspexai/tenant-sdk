@@ -616,11 +616,8 @@ def test_grounded_verify_validates_the_authorization_block():
             "summary_sha256": "0" * 64,
             "issued_at": "2026-07-06T20:00:00+00:00",
         }
-        canonical = _json.dumps(
-            {**body, "coordinator_signature": None} | body, sort_keys=True, separators=(",", ":")
-        )
-        # sign over body + coordinator_signature EXCLUDED, pubkey EXCLUDED —
-        # mirror the coordinator: canonical of block sans coordinator_pubkey_hex
+        # sign over the body EXCLUDING coordinator_signature/pubkey — mirror the
+        # coordinator: canonical of the block sans coordinator_pubkey_hex.
         signed = dict(body)
         signed["coordinator_signature"] = coord.sign(
             _json.dumps(signed, sort_keys=True, separators=(",", ":")).encode()
