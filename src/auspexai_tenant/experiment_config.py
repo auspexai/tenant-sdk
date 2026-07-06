@@ -71,6 +71,15 @@ class ExperimentConfig:
         return self.driver.get("path")
 
     @property
+    def capture_raw(self) -> bool:
+        """`[capture] raw` — D20 opt-in to raw model-output collection (R3-only,
+        live). One line, profile-inheritable. Absent = today's behavior (raw
+        never leaves the executor). Declared pre-run → feeds admission via
+        sensitive_content_flags; enables the executor to emit `raw_response`."""
+        c = self.raw.get("capture")
+        return bool(c.get("raw")) if isinstance(c, dict) else False
+
+    @property
     def benchmark_reference(self) -> str | None:
         """`[benchmark].reference` — the experiment this run's Drift Benchmark
         scores against (its signed manifest defines the envelope). TENANT-GENERIC
@@ -365,6 +374,16 @@ def manifest_dict_from_config(
     # commit + dirty bit (best-effort; absent outside a git tree). Descriptive,
     # never enforced — its readers are the D16.2 verify chain/bundle + the
     # dashboard. Every toml-built manifest is therefore v0.6+.
+    # D20: raw-content capture opt-in (ratified 2026-07-06) — declared pre-run so
+    # the coordinator permits the reserved `raw_response` key at ingest, and the
+    # admission assessment sees it via sensitive_content_flags.
+    if cfg.capture_raw:
+        manifest["capture"] = {"raw": True}
+        flags = manifest.get("sensitive_content_flags") or []
+        if "raw_content_capture" not in flags:
+            flags = [*flags, "raw_content_capture"]
+        manifest["sensitive_content_flags"] = flags
+
     manifest["config_provenance"] = _config_provenance(cfg)
 
     # schema_version bumps to the lowest version that covers the declared

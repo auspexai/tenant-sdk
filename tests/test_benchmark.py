@@ -660,3 +660,27 @@ def test_grounded_verify_validates_the_authorization_block():
     # No block at all → still admissible (pre-flag-day grace).
     plain = build_entry(**kw)
     assert verify_entry_grounded(plain, authorized_signers=(coord.pubkey_hex,)) is not None
+
+
+def test_capture_raw_declaration_and_manifest(tmp_path):
+    # D20: [capture] raw opt-in → manifest capture block + sensitive flag.
+    from auspexai_tenant.experiment_config import load_experiment_config, manifest_dict_from_config
+
+    base = (
+        "[experiment]\n"
+        'tenant_id = "lab"\ncontact = "a@b.org"\nmodel_id = "m"\n'
+        f'research_goal = "{"x" * 60}"\nprompt_characteristics = "neutral probes"\n'
+        '[executor]\ncommand = ["python", "x.py"]\n'
+        '[reducer]\nkind = "builtin_hash_agreement"\n'
+    )
+    off = tmp_path / "off.toml"
+    off.write_text(base)
+    assert load_experiment_config(off).capture_raw is False
+
+    on = tmp_path / "on.toml"
+    on.write_text(base + "[capture]\nraw = true\n")
+    cfg = load_experiment_config(on)
+    assert cfg.capture_raw is True
+    m = manifest_dict_from_config(cfg, package_sha256="a" * 64, label="x")
+    assert m["capture"] == {"raw": True}
+    assert "raw_content_capture" in m["sensitive_content_flags"]
