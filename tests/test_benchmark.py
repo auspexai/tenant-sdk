@@ -566,3 +566,97 @@ def test_error_code_parses_the_real_nested_envelope():
     assert _error_code(nested) == "unit_id_already_submitted"
     assert _error_code(bare) == "max_units_exceeded"
     assert _error_code(httpx.Response(409, text="<html>")) is None
+
+
+def test_grounded_verify_validates_the_authorization_block():
+    # G6: when the entry carries a publication authorization, the grounded rule
+    # verifies the coordinator's signature, the publisher binding, the
+    # experiment match, and standing >= R1 — a forged or transplanted block
+    # fails admission.
+    import json as _json
+
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from auspexai_tenant.benchmark_entry import build_entry, verify_entry_grounded
+
+    class _Key:
+        def __init__(self):
+            self._k = Ed25519PrivateKey.generate()
+            self.pubkey_hex = self._k.public_key().public_bytes_raw().hex()
+
+        def sign(self, d):
+            return self._k.sign(d)
+
+    coord, publisher = _Key(), _Key()
+
+    def bundle(mh):
+        rec = f"root|{publisher.pubkey_hex}|2026-07-06T20:00:00+00:00|{mh}".encode()
+        return {
+            "manifest_hash": mh,
+            "manifest": {"models": [{"id": "m"}], "feature_schema": {}},
+            "attestation": {"merkle_root": "r" * 64, "rekor_log_index": 1},
+            "transfer": {
+                "result_set_root": "root",
+                "collected_by_pubkey": publisher.pubkey_hex,
+                "collected_at": "2026-07-06T20:00:00+00:00",
+                "manifest_hash": mh,
+                "coordinator_pubkey_hex": coord.pubkey_hex,
+                "coordinator_signature": coord.sign(rec).hex(),
+            },
+        }
+
+    def auth_block(standing=2, experiment_id="exp-a", pub=None):
+        body = {
+            "schema": "auspexai-publication-authorization/v0",
+            "action": "benchmark-publication",
+            "experiment_id": experiment_id,
+            "tenant_id": "t",
+            "publisher_pubkey": (pub or publisher).pubkey_hex,
+            "standing_at_issue": standing,
+            "summary_sha256": "0" * 64,
+            "issued_at": "2026-07-06T20:00:00+00:00",
+        }
+        canonical = _json.dumps(
+            {**body, "coordinator_signature": None} | body, sort_keys=True, separators=(",", ":")
+        )
+        # sign over body + coordinator_signature EXCLUDED, pubkey EXCLUDED —
+        # mirror the coordinator: canonical of block sans coordinator_pubkey_hex
+        signed = dict(body)
+        signed["coordinator_signature"] = coord.sign(
+            _json.dumps(signed, sort_keys=True, separators=(",", ":")).encode()
+        ).hex()
+        signed["coordinator_pubkey_hex"] = coord.pubkey_hex
+        return signed
+
+    record = {
+        "computed_at": "t",
+        "observation": {"experiment_id": "exp-a", "label": "a"},
+        "reference": {"experiment_id": "exp-b", "label": "b"},
+        "report": {
+            "peak_eu": 1.0,
+            "breadth": 0.0,
+            "byte_divergence_rate": 0.0,
+            "diverged_units_total": None,
+            "key_feature": "probe_id",
+            "probes": [],
+        },
+    }
+    kw = dict(
+        record=record,
+        observation_bundle=bundle("a" * 64),
+        reference_bundle=bundle("b" * 64),
+        tenant_id="t",
+        key=publisher,
+    )
+    ok = build_entry(**kw, authorization=auth_block())
+    assert verify_entry_grounded(ok, authorized_signers=(coord.pubkey_hex,)) is not None
+    # Wrong experiment in the block → transplant refused.
+    wrong = build_entry(**kw, authorization=auth_block(experiment_id="exp-OTHER"))
+    assert verify_entry_grounded(wrong, authorized_signers=(coord.pubkey_hex,)) is None
+    # A block naming a different publisher → refused.
+    thief = _Key()
+    swapped = build_entry(**kw, authorization=auth_block(pub=thief))
+    assert verify_entry_grounded(swapped, authorized_signers=(coord.pubkey_hex,)) is None
+    # No block at all → still admissible (pre-flag-day grace).
+    plain = build_entry(**kw)
+    assert verify_entry_grounded(plain, authorized_signers=(coord.pubkey_hex,)) is not None

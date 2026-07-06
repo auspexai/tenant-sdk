@@ -95,6 +95,7 @@ def build_entry(
     reference_bundle: dict[str, Any],
     tenant_id: str | None,
     key,  # TenantKey
+    authorization: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """A signed registry entry from a saved benchmark record + the two
     custody-verified bundles it was scored over. The caller has ALREADY
@@ -106,6 +107,12 @@ def build_entry(
         "published_at": datetime.now(UTC).isoformat(),
         "publisher_pubkey_hex": key.pubkey_hex,
         "tenant_id": tenant_id,
+        # G6 (ratified 2026-07-06): the coordinator-signed publication
+        # authorization — proof the publisher held research standing R1+ when
+        # the coordinator authorized (and audited) this publication. The board
+        # CI verifies it like custody; None only for pre-governance publishes
+        # (admissible until the flag-day).
+        "publication_authorization": authorization,
         # The MACHINE-DERIVED config delta (no free text anywhere on the board):
         # what the observation's signed manifest declares differently from the
         # reference's. This IS the meaning of the score — the benchmark measures
@@ -217,5 +224,29 @@ def verify_entry_grounded(
         ):
             return None
         if t.get("manifest_hash") != block.get("manifest_hash"):
+            return None
+    auth = payload.get("publication_authorization")
+    if auth is not None:
+        try:
+            body = {
+                k: v
+                for k, v in auth.items()
+                if k not in ("coordinator_pubkey_hex", "coordinator_signature")
+            }
+            canonical = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+            apub = Ed25519PublicKey.from_public_bytes(bytes.fromhex(auth["coordinator_pubkey_hex"]))
+            apub.verify(bytes.fromhex(auth["coordinator_signature"]), canonical)
+        except (InvalidSignature, KeyError, ValueError, TypeError):
+            return None
+        if auth["coordinator_pubkey_hex"].lower() not in signers:
+            return None
+        if (
+            auth.get("publisher_pubkey", "").lower()
+            != payload.get("publisher_pubkey_hex", "").lower()
+        ):
+            return None
+        if auth.get("experiment_id") != (payload.get("observation") or {}).get("experiment_id"):
+            return None
+        if int(auth.get("standing_at_issue") or 0) < 1:
             return None
     return payload

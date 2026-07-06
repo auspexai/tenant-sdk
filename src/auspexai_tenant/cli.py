@@ -1665,12 +1665,56 @@ def benchmark_publish(
         (layout.dir / f"benchmark_vs_{reference_id}.json").write_text(json.dumps(record, indent=2))
         click.echo(f"scored: peak {report.peak_eu} EU (report saved beside the run)")
 
+    # G6 (ratified): request the coordinator's publication authorization —
+    # the R1+ standing gate, the audit row, and the signed block the board CI
+    # verifies. An older coordinator (endpoint absent) publishes ungoverned
+    # until the flag-day; a standing refusal is terminal and explains itself.
+    authorization = None
+    rep = record.get("report") or {}
+    try:
+        from auspexai_tenant.experiment import Experiment
+
+        resp = Experiment(coordinator, key, exp_id)._post(
+            f"/api/v0/experiments/{exp_id}/actions/authorize-benchmark-publication",
+            json={
+                "reference_experiment_id": reference_id,
+                "peak_eu": rep.get("peak_eu"),
+                "breadth": rep.get("breadth"),
+                "byte_divergence_rate": rep.get("byte_divergence_rate"),
+            },
+        )
+        if resp.status_code == 200:
+            authorization = resp.json()["authorization"]
+            click.echo(
+                f"publication authorized (standing R{authorization.get('standing_at_issue')}, "
+                "audited coordinator-side)"
+            )
+        elif resp.status_code == 403:
+            detail = resp.json().get("detail", {}).get("error", {})
+            click.echo(f"ERROR: {detail.get('message', 'publication refused')}", err=True)
+            sys.exit(1)
+        elif resp.status_code in (404, 405):
+            click.echo(
+                "WARNING: coordinator predates publication governance — publishing "
+                "without an authorization block.",
+                err=True,
+            )
+        else:
+            click.echo(
+                f"WARNING: authorization request failed (HTTP {resp.status_code}) — "
+                "publishing without an authorization block.",
+                err=True,
+            )
+    except Exception as e:
+        click.echo(f"WARNING: authorization request failed ({e}) — continuing.", err=True)
+
     entry = build_entry(
         record=record,
         observation_bundle=obs_bundle,
         reference_bundle=ref_bundle,
         tenant_id=(obs_bundle.get("manifest") or {}).get("tenant_id"),
         key=key,
+        authorization=authorization,
     )
     payload = verify_entry(entry)
     assert payload is not None
