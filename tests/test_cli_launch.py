@@ -43,6 +43,24 @@ def test_wait_for_approval_exits_on_terminal_status() -> None:
     assert ei.value.code == 1
 
 
+def test_wait_for_approval_uses_doorbell_wake() -> None:
+    """D22-A: with a --doorbell wake, `_wait_for_approval` reacts via `wake.wait()`
+    (the SSE approval event) instead of the poll floor. poll_interval=999 would
+    hang the test if it slept, so passing proves the wake path is taken."""
+
+    class _Wake:
+        def __init__(self) -> None:
+            self.waits = 0
+
+        def wait(self) -> None:
+            self.waits += 1
+
+    wake = _Wake()
+    c = _FakeClient(["submitted", "submitted", "approved"])
+    assert _wait_for_approval(c, "exp-x", poll_interval=999, wake=wake) == "approved"
+    assert wake.waits == 2  # doorbell-driven, not the 999s poll floor
+
+
 def test_launch_no_experiment_toml_is_clear_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     deep = tmp_path / "a" / "b"
     deep.mkdir(parents=True)

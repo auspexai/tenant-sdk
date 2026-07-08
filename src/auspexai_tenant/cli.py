@@ -1184,6 +1184,30 @@ def experiment_run(
     wake = spec.wake
     if wake is None and doorbell:
         wake = SseWake(sse_line_source(coordinator, key, experiment_id))
+    # D22-A: `run` (a resume, or the `launch`→`run` delegation) can land on a
+    # still-`submitted` experiment — a maintainer approves minutes-to-hours after
+    # launch. Submitting into `submitted` 409s `experiment_not_open_for_submissions`
+    # and, pre-fix, killed the driver (the weekend-campaign resume incident). Wait
+    # for approval FIRST; an already-approved experiment returns immediately.
+    # --doorbell (an SSE source whose events include `experiment.status`) reacts to
+    # approval instantly; otherwise a tight poll. Ctrl-C here leaves it submitted
+    # (resume semantics — never abort an experiment we're only resuming).
+    approval_wake = SseWake(sse_line_source(coordinator, key, experiment_id)) if doorbell else None
+    try:
+        _wait_for_approval(
+            client,
+            experiment_id,
+            _APPROVAL_POLL_SECONDS,
+            resumable=True,
+            wake=approval_wake,
+        )
+    except KeyboardInterrupt:
+        click.echo(
+            f"\ninterrupted while waiting for approval — {experiment_id} left submitted; "
+            f"resume with `auspexai-tenant experiment run {label}`.",
+            err=True,
+        )
+        sys.exit(130)
     # CLI flag wins over a spec-level cap; either may be unset.
     parsed_cap = parse_duration(duration_cap) if duration_cap is not None else None
     duration_cap_seconds = (
@@ -1257,16 +1281,25 @@ def experiment_run(
     _auto_benchmark(client, label, runs_dir=cfg.runs_dir)
 
 
+# D22-A: how often `_wait_for_approval` re-checks status when there is no
+# doorbell. A maintainer approves minutes-to-hours after launch, so a tight poll
+# is cheap and the wait itself is unbounded (the run is resumable meanwhile).
+_APPROVAL_POLL_SECONDS = 5.0
+
+
 def _wait_for_approval(
-    client, experiment_id: str, poll_interval: float, *, resumable: bool = False
+    client, experiment_id: str, poll_interval: float, *, resumable: bool = False, wake=None
 ) -> str:
     """Block until the experiment leaves the pending (`submitted`) state — the
-    driver can only submit work units once it is approved/paused, so `launch`
-    waits here rather than 409-ing the drive into an orphaned experiment. Returns
-    the go-status; exits on a terminal status. A Ctrl-C here propagates to the
-    caller (`launch`), whose D14 handler aborts the submitted experiment by
-    default — a killed launch must not leave a silent orphan that auto-approves
-    as a driverless run; `resumable` only selects the announced hint."""
+    driver can only submit work units once it is approved/paused, so BOTH `launch`
+    and `run` wait here rather than 409-ing the drive into an orphaned experiment
+    (D22-A: a resume can land on a still-`submitted` experiment when the maintainer
+    approves minutes-to-hours after launch). Returns the go-status; exits on a
+    terminal status. A Ctrl-C here propagates to the caller, whose handler decides
+    abort (launch's D14 semantics) vs leave-submitted (run's resume semantics);
+    `resumable` only selects the announced hint. When `wake` (a `--doorbell` SSE
+    source, whose events include `experiment.status`) is given, react to the
+    approval event instantly, with `poll_interval` as the liveness floor."""
     waiting = {"submitted", "pending", "draft"}
     terminal = {"completed", "aborted", "failed", "expired", "rejected", "declined"}
     announced = False
@@ -1292,7 +1325,10 @@ def _wait_for_approval(
                 f"https://ops.auspexai.network ({hint})."
             )
             announced = True
-        time.sleep(poll_interval)
+        if wake is not None:
+            wake.wait()  # SSE approval event or the floor, whichever first
+        else:
+            time.sleep(poll_interval)
 
 
 @experiment.command("launch")
