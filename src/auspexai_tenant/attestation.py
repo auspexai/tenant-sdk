@@ -406,6 +406,12 @@ def verify_attestation(
         signed_root_matches = (
             statement.get("predicateType") == expected_type
             and predicate.get("merkle_root") == att.merkle_root
+            # AUD-35 (A9 audit): `partial` is COSE-SIGNED in the predicate but was
+            # read from the unsigned HTTP body — so a checkpoint (partial) set could
+            # be served with body.partial=false and pass, letting a researcher
+            # publish an incomplete set as final. Bind it to the signed predicate
+            # (the durable bundle path already does this).
+            and bool(predicate.get("partial", False)) == att.partial
         )
     except Exception:
         signed_root_matches = False

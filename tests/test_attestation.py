@@ -364,3 +364,19 @@ def test_verify_attestation_check_rekor_folds_into_ok():
     # check_rekor=False → offline-only, ok True, no rekor result.
     v3 = verify_attestation(att)
     assert v3.rekor_inclusion is None and v3.ok is True
+
+
+def test_partial_flag_bound_to_signed_predicate():
+    """AUD-35: a checkpoint (partial) attestation re-served with body.partial=false
+    must NOT verify — `partial` is read from the COSE-signed predicate, not the
+    unsigned response body, so a partial set can't masquerade as final."""
+    key = Ed25519PrivateKey.generate()
+    pub_hex = key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex()
+    body = _sign_attestation([_unit("u1")], key, partial=True)  # signed predicate: partial=True
+    # Tamper the UNSIGNED body: drop the partial flag so it reads as a complete set.
+    body.pop("partial", None)
+    att = ResultSetAttestation.from_response(body)
+    assert att.partial is False  # the body now claims the set is complete
+    v = verify_attestation(att, authorized_signers=[pub_hex])
+    assert not v.ok  # ...but the signed predicate says partial=True → mismatch
+    assert not v.signed_root_matches

@@ -159,6 +159,26 @@ def test_model_acquisition_coords_roundtrip_and_schema() -> None:
     assert m2.models[0].hf_filename == "Model-Q4_K_M.gguf"
 
 
+@pytest.mark.parametrize("good_id", ["m", "gemma-3-1b-it-q4", "qwen2.5-0.5b-instruct-q4"])
+def test_model_id_accepts_real_convention(good_id: str) -> None:
+    """AUD-24: the id pattern must not reject the real convention (dots+hyphens)."""
+    raw = json.loads((FIXTURES / "valid_minimal.json").read_text())
+    raw["models"][0]["id"] = good_id
+    assert Manifest.model_validate(raw).models[0].id == good_id
+
+
+@pytest.mark.parametrize("evil_id", ["..", "../tenants", "a/b", "/etc", ".hidden", "has space"])
+def test_model_id_rejects_traversal_and_separators(evil_id: str) -> None:
+    """AUD-24 (A9 audit): the worker uses model.id verbatim as a filesystem path
+    bind-mounted into the STRICT sandbox. Reject traversal/separators at the SDK
+    boundary too — an early tenant-facing error, defense-in-depth over the
+    worker's own resolve()/relative_to guard."""
+    raw = json.loads((FIXTURES / "valid_minimal.json").read_text())
+    raw["models"][0]["id"] = evil_id
+    with pytest.raises(ValidationError):
+        Manifest.model_validate(raw)
+
+
 # --- JSON Schema vs Pydantic drift detector -----------------------------------
 
 

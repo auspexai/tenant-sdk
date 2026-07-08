@@ -224,6 +224,42 @@ def _receipt_anchor_hashes(cose_b64: str) -> set[str] | None:
         return None
 
 
+def _receipt_quorum(cose_b64: str) -> tuple[int, str] | None:
+    """Decode one bundle receipt and return `(agreeing_workers, method)` from its
+    SIGNED quorum_agreement — the authoritative achieved-corroboration record used
+    to re-derive a unit's integrity_basis (AUD-30). None on invalid signature /
+    unrecognized shape."""
+    try:
+        import cbor2
+
+        valid, _signer, payload = _cose_verify(b64decode(cose_b64))
+        if not valid:
+            return None
+        statement = cbor2.loads(payload)
+        receipt = cbor2.loads(statement["predicate"])
+        qa = receipt.get("quorum_agreement") or {}
+        aw = qa.get("agreeing_workers")
+        method = qa.get("method")
+        if not isinstance(aw, int) or not isinstance(method, str):
+            return None
+        return (aw, method)
+    except Exception:
+        return None
+
+
+def _classify_consensus_basis(agreeing_workers: int, method: str) -> str:
+    """SDK mirror of the coordinator's `classify_consensus_basis` (AUD-30): a
+    unit's integrity_basis from its ACHIEVED corroboration + reducer method. A
+    single replica has no peer ⇒ `process_only` regardless of method; ≥2 agreeing
+    ⇒ `within_cell_tolerance` for the declared-envelope reducer, else
+    `within_cell_exact` (never overclaim exact from a within-envelope agreement)."""
+    if agreeing_workers < 2:
+        return "process_only"
+    if method == "builtin_within_cell_tolerance":
+        return "within_cell_tolerance"
+    return "within_cell_exact"
+
+
 def verify_additional_results(
     bundle: dict[str, Any], att: ResultSetAttestation | None
 ) -> bool | None:
@@ -551,6 +587,15 @@ def verify_bundle(
     # attestation is signed by the same coordinator key as the transfer.
     signer_hex = t.get("coordinator_pubkey_hex", "").lower()
     att_signers: list[str] | None
+    # AUD-23 (A9 audit): the attestation predicate (governance_footprint, per-unit
+    # integrity_basis, diverged_units, pre_registration) is NOT in the Merkle leaf,
+    # so root-equality alone (root_unified) does not bind it — a bundle holder can
+    # re-author the predicate under their OWN key at the same root. Bind the
+    # attestation COSE signer to the SAME coordinator key that signed the transfer
+    # record (signer_hex), in every mode that pins at all. Only `--no-pin` (an
+    # explicit forensic opt-out) leaves it unbound. Previously the soft "known" and
+    # "unpinned" paths passed att_signers=None → verify_attestation accepted ANY
+    # attestation signer, voiding firewall #2's coordinator-attested premise.
     if no_pin:
         signer_authorized = True
         signer_pin_mode = "skipped"
@@ -558,15 +603,17 @@ def verify_bundle(
     elif authorized_signers is not None:
         signer_authorized = signer_hex in {s.lower() for s in authorized_signers}
         signer_pin_mode = "explicit"
+        # Already safe against AUD-23: the attacker's re-authoring key is not in the
+        # caller-supplied allowlist, so verify_attestation rejects it.
         att_signers = authorized_signers
     elif signer_hex in {k.lower() for k in KNOWN_PUBLIC_SIGNERS}:
         signer_authorized = True
         signer_pin_mode = "known"
-        att_signers = None
+        att_signers = [signer_hex]
     else:
         signer_authorized = True
         signer_pin_mode = "unpinned"
-        att_signers = None
+        att_signers = [signer_hex]
 
     consensus = bundle.get("consensus_results") or []
     # C7 Inc 4: {unit_id: evidence} from the bundle's unit_consensus block —
@@ -597,6 +644,26 @@ def verify_bundle(
             claimed = (governance_footprint.get("integrity_basis") or {}).get("counts") or {}
             recount = recompute_integrity_basis_counts(att.units, att.diverged_units)
             footprint_ok = {k: claimed.get(k, 0) for k in recount} == recount
+            # AUD-30: the recount above only checks the footprint's aggregate against
+            # the predicate's OWN per-unit labels — it never consults the receipts.
+            # A predicate that labels a repl-1 process_only unit `within_cell_exact`
+            # (and adjusts the counts to match) would pass, so a researcher treats a
+            # single-worker result as byte-exact corroborated by ≥2 workers. Re-derive
+            # each unit's basis from its RECEIPT's signed quorum_agreement (the
+            # authoritative achieved-corroboration record) and require it to match the
+            # predicate label. Checked when the unit's receipt is present in the bundle.
+            _receipt_cose = {
+                r.get("receipt_id"): r.get("cose_b64") for r in (bundle.get("receipts") or [])
+            }
+            for _u in att.units:
+                _label = _u.get("integrity_basis")
+                _cose = _receipt_cose.get(_u.get("receipt_id"))
+                if _label is None or _cose is None:
+                    continue  # legacy v0 (no per-unit basis) or receipt absent
+                _quorum = _receipt_quorum(_cose)
+                if _quorum is None or _classify_consensus_basis(*_quorum) != _label:
+                    footprint_ok = False
+                    break
         att_verification = verify_attestation(
             att,
             authorized_signers=att_signers,

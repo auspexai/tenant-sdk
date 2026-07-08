@@ -41,7 +41,14 @@ class Model(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    id: str
+    # AUD-24 (A9 audit): the worker uses `id` verbatim as a single-segment
+    # filesystem path (`<model_store>/<id>/`) and bind-mounts it into the STRICT
+    # sandbox. A traversal id (`..`, `../tenants`) or one with a separator would
+    # escape the store, so constrain it to a single safe segment here too — an
+    # early tenant-facing error, with the worker's resolve()/relative_to guard as
+    # the actual enforcement. Allows the real convention (e.g. `qwen2.5-0.5b-
+    # instruct-q4`, `gemma-3-1b-it-q4`): alnum start, then alnum/`.`/`_`/`-`/`:`.
+    id: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$", max_length=128)]
     version: str
     local_weights_required: bool
     hf_repo: str | None = None

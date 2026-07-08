@@ -821,3 +821,115 @@ def test_absent_deviations_member_is_lenient():
     v = verify_bundle(_make_bundle(ck, wk))
     assert v.deviations_disclosed is None and v.deviations_ok is None
     assert v.ok
+
+
+def test_forged_attestation_signer_rejected_in_default_mode() -> None:
+    """AUD-23 (A9 audit): the attestation predicate (governance_footprint, per-unit
+    integrity_basis, diverged_units, pre_registration) is NOT in the Merkle leaf, so
+    a bundle holder can re-author it under their OWN key at the SAME root. The default
+    (soft/unpinned) verify must bind the attestation COSE signer to the transfer
+    coordinator key and REJECT a mismatch — not accept any valid signature."""
+    ck, wk = _keys()
+    attacker_key = Ed25519PrivateKey.generate()
+
+    bundle = _make_bundle(ck, wk, n=2)
+    assert verify_bundle(bundle).ok  # genuine bundle verifies
+
+    # Reconstruct the exact attested units (→ identical Merkle root) and re-sign the
+    # attestation under the ATTACKER's key with a fabricated governance_footprint.
+    att_units = [
+        {
+            "unit_id": f"u{i}",
+            "consensus_result_hash": hashlib.sha256(f"consensus-{i}".encode()).hexdigest(),
+            "receipt_id": f"rcpt-u{i}",
+            "unit_payload_sha256": unit_payload_sha256({"q": i}),
+        }
+        for i in range(2)
+    ]
+    forged = _sign_v1_attestation(
+        att_units,
+        attacker_key,
+        footprint={
+            "tier": "T3",
+            "human_approval": True,
+            "integrity_basis": {"counts": {"within_cell_exact": 2}},
+        },
+    )
+    # Same root — only the signer differs. Root-equality (root_unified) still holds.
+    assert forged["merkle_root"] == bundle["attestation"]["merkle_root"]
+    bundle["attestation"] = forged
+
+    result = verify_bundle(bundle)
+    assert not result.ok
+    assert result.attestation is not None
+    assert not result.attestation.signer_authorized  # the binding caught the swap
+
+
+def _sign_receipt(key, *, receipt_id, agreeing_workers, method):
+    """A bundle receipt COSE (statement→predicate = receipt CBOR with a
+    quorum_agreement), signed exactly as _receipt_quorum expects to decode it."""
+    receipt_predicate = {
+        "quorum_agreement": {
+            "replication_factor": 3,
+            "agreeing_workers": agreeing_workers,
+            "method": method,
+        },
+        "result_hash_anchors": [
+            {
+                "result_sha256": "a" * 64,
+                "rekor_log_index": 0,
+                "rekor_entry_uuid": "lab-mode-no-rekor",
+            }
+        ],
+    }
+    predicate_cbor = cbor2.dumps(receipt_predicate, canonical=True)
+    statement = {
+        "_type": "https://www.in-toto.io/Statement/v1",
+        "subject": [{"name": f"auspexai:receipt/{receipt_id}", "digest": {"sha256": "0" * 64}}],
+        "predicateType": "https://auspexai.network/receipt/v0.1",
+        "predicate": predicate_cbor,
+    }
+    statement_cbor = cbor2.dumps(statement, canonical=True)
+    protected = cbor2.dumps({_ALG: _EDDSA, _KID: _pub_hex(key).encode("ascii")}, canonical=True)
+    sig_structure = cbor2.dumps(["Signature1", protected, b"", statement_cbor], canonical=True)
+    cose = cbor2.dumps([protected, {}, statement_cbor, key.sign(sig_structure)], canonical=True)
+    return {"receipt_id": receipt_id, "cose_b64": b64encode(cose).decode()}
+
+
+_FP_EXACT_1 = {
+    "integrity_basis": {
+        "counts": {
+            "within_cell_exact": 1,
+            "within_cell_tolerance": 0,
+            "process_only": 0,
+            "diverged": 0,
+        }
+    }
+}
+
+
+def test_footprint_receipt_derived_basis_mismatch_fails():
+    """AUD-30: a predicate labeling a repl-1 process_only unit within_cell_exact
+    (with self-consistent counts) is caught by re-deriving the basis from the
+    receipt's signed quorum_agreement (agreeing_workers=1 ⇒ process_only)."""
+    ck, wk = _keys()
+    bundle = _make_bundle(ck, wk, n=1, unit_basis="within_cell_exact", footprint=_FP_EXACT_1)
+    bundle["receipts"] = [
+        _sign_receipt(ck, receipt_id="rcpt-u0", agreeing_workers=1, method="builtin_hash_agreement")
+    ]
+    v = verify_bundle(bundle)
+    assert not v.footprint_ok  # receipt says process_only, predicate claims exact
+    assert not v.ok
+
+
+def test_footprint_receipt_derived_basis_match_passes():
+    """The honest case: the receipt's quorum (2 agreeing, hash-agreement) derives
+    within_cell_exact, matching the predicate label → footprint stands."""
+    ck, wk = _keys()
+    bundle = _make_bundle(ck, wk, n=1, unit_basis="within_cell_exact", footprint=_FP_EXACT_1)
+    bundle["receipts"] = [
+        _sign_receipt(ck, receipt_id="rcpt-u0", agreeing_workers=2, method="builtin_hash_agreement")
+    ]
+    v = verify_bundle(bundle)
+    assert v.footprint_ok
+    assert v.ok
