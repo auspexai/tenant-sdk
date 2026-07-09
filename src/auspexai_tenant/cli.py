@@ -1500,6 +1500,15 @@ def experiment_launch(
         exact_label=exact_label,
         out_path=pkg_dir / scratch_name,
     )
+    # The build stamped THIS launch's unique label into the manifest (as
+    # experiment_id). We drive that experiment BY LABEL below — never `latest`,
+    # which races when several launches run concurrently (--detach): each would
+    # resolve the most-recently-submitted, so all three collapse onto the last one.
+    # Read it before the scratch manifest is cleaned up.
+    try:
+        stamped_label = json.loads((pkg_dir / scratch_name).read_text()).get("experiment_id")
+    except (OSError, ValueError):
+        stamped_label = None
     try:
         ctx.invoke(
             experiment_submit,
@@ -1512,7 +1521,7 @@ def experiment_launch(
         for leftover in (pkg_dir / scratch_name, pkg_dir / (scratch_name + ".sig")):
             leftover.unlink(missing_ok=True)
     client = _make_client(coordinator, key_path)
-    experiment_id, label = _resolve_experiment(client, "latest")
+    experiment_id, label = _resolve_experiment(client, stamped_label or "latest")
     # If we're the detached child, stamp the experiment into our record so `ps`
     # can show it (no-op in a foreground launch).
     from auspexai_tenant import driver_manager

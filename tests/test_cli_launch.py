@@ -178,3 +178,38 @@ def test_launch_ctrl_c_resumable_leaves_submitted(
     r = CliRunner().invoke(main, ["experiment", "launch", "--resumable"], standalone_mode=False)
     assert isinstance(r.exception, SystemExit) and r.exception.code == 130
     assert _AbortRecorder.aborted == []  # left submitted server-side by request
+
+
+def test_launch_resolves_its_own_stamped_label_not_latest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Concurrency fix: launch drives the experiment IT submitted — resolved by the
+    unique label the build stamped into the manifest — NOT `latest`, so concurrent
+    --detach launches don't all collapse onto the last-submitted experiment."""
+    import json
+
+    import auspexai_tenant.cli as cli_mod
+
+    _launch_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    def _fake_build(**kw):  # write a manifest carrying THIS launch's stamped label
+        kw["out_path"].write_text(json.dumps({"experiment_id": "vig-mine-20260709-000001"}))
+
+    monkeypatch.setattr(cli_mod.experiment_build, "callback", _fake_build)
+    monkeypatch.setattr(cli_mod.experiment_submit, "callback", lambda **kw: None)
+    monkeypatch.setattr(cli_mod, "_make_client", lambda coordinator, key_path: object())
+    monkeypatch.setattr(cli_mod, "_load_key", lambda key_path: object())
+    monkeypatch.setattr(cli_mod, "_record_benchmark_declaration", lambda *a, **k: None)
+
+    seen = {}
+
+    def _capture_resolve(client, target):
+        seen["target"] = target
+        return ("exp-mine", "vig-mine-20260709-000001")
+
+    monkeypatch.setattr(cli_mod, "_resolve_experiment", _capture_resolve)
+    # --no-drive returns right after the resolve, which is all we're asserting on.
+    r = CliRunner().invoke(main, ["experiment", "launch", "--no-drive"], standalone_mode=False)
+    assert r.exit_code == 0, r.output
+    assert seen["target"] == "vig-mine-20260709-000001"  # its OWN label, not "latest"
