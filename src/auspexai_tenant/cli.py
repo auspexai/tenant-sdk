@@ -1568,9 +1568,14 @@ def experiment_launch(
         sys.exit(130)
     click.echo(f"approved ({status}) — driving.")
     driver_manager.set_status("driving")
+    # Drive the experiment THIS launch just submitted — by its exact exp- id, not
+    # `latest`. `latest` re-resolves the most-recently-submitted experiment tenant-
+    # wide, so concurrent `--detach` launches all collapse onto the last one (the
+    # other drivers submit 0 units). We already waited on `experiment_id`'s approval
+    # above; drive that same id.
     ctx.invoke(
         experiment_run,
-        target="latest",
+        target=experiment_id,
         driver_spec=driver_spec,
         journal_path=journal_path,
         config_path=config_path,

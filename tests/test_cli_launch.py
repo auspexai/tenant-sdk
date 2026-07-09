@@ -213,3 +213,45 @@ def test_launch_resolves_its_own_stamped_label_not_latest(
     r = CliRunner().invoke(main, ["experiment", "launch", "--no-drive"], standalone_mode=False)
     assert r.exit_code == 0, r.output
     assert seen["target"] == "vig-mine-20260709-000001"  # its OWN label, not "latest"
+
+
+def test_launch_drives_the_experiment_it_submitted_not_latest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression (concurrent --detach collapse): after approval, launch must DRIVE
+    the exact experiment id it just submitted — never `latest`. The prior bug
+    resolved the stamped label for the approval WAIT (line 1524) but then invoked
+    `experiment run --target latest` for the DRIVE, so N concurrent launches all
+    drove the last-submitted experiment and the other N-1 drivers submitted 0 units.
+    The --no-drive test above never exercised the drive call, so it missed this.
+    Assert the target handed to `experiment_run` is the resolved exp- id."""
+    import json
+
+    import auspexai_tenant.cli as cli_mod
+
+    _launch_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    def _fake_build(**kw):
+        kw["out_path"].write_text(json.dumps({"experiment_id": "vig-mine-20260709-000001"}))
+
+    monkeypatch.setattr(cli_mod.experiment_build, "callback", _fake_build)
+    monkeypatch.setattr(cli_mod.experiment_submit, "callback", lambda **kw: None)
+    monkeypatch.setattr(cli_mod, "_make_client", lambda coordinator, key_path: object())
+    monkeypatch.setattr(cli_mod, "_load_key", lambda key_path: object())
+    monkeypatch.setattr(cli_mod, "_record_benchmark_declaration", lambda *a, **k: None)
+    monkeypatch.setattr(
+        cli_mod,
+        "_resolve_experiment",
+        lambda client, target: ("exp-mine", "vig-mine-20260709-000001"),
+    )
+    monkeypatch.setattr(cli_mod, "_wait_for_approval", lambda *a, **k: "approved")
+
+    seen = {}
+    monkeypatch.setattr(
+        cli_mod.experiment_run, "callback", lambda **kw: seen.update(target=kw.get("target"))
+    )
+
+    r = CliRunner().invoke(main, ["experiment", "launch"], standalone_mode=False)
+    assert r.exit_code == 0, r.output
+    assert seen["target"] == "exp-mine"  # the id it submitted — NOT "latest"
