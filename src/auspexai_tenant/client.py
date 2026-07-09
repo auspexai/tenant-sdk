@@ -182,11 +182,14 @@ class TenantClient:
             "Content-Type": "application/gzip",
             "X-Package-Digest": digest,
         }
-        if self._client is None:
-            with httpx.Client(timeout=self._timeout) as c:
-                resp = c.post(url, auth=self._auth, content=archive, headers=headers)
-        else:
-            resp = self._client.post(url, auth=self._auth, content=archive, headers=headers)
+
+        def _do() -> httpx.Response:
+            if self._client is None:
+                with httpx.Client(timeout=self._timeout) as c:
+                    return c.post(url, auth=self._auth, content=archive, headers=headers)
+            return self._client.post(url, auth=self._auth, content=archive, headers=headers)
+
+        resp = call_with_retry(_do)  # idempotent by package digest — re-upload returns 200
         if not resp.is_success:
             raise CoordinatorError(resp.status_code, resp.text)
         return resp.json()
@@ -195,11 +198,14 @@ class TenantClient:
 
     def _post(self, path: str, body: dict[str, Any]) -> Any:
         url = f"{self._base}{path}"
-        if self._client is None:
-            with httpx.Client(timeout=self._timeout) as c:
-                resp = c.post(url, auth=self._auth, json=body)
-        else:
-            resp = self._client.post(url, auth=self._auth, json=body)
+
+        def _do() -> httpx.Response:
+            if self._client is None:
+                with httpx.Client(timeout=self._timeout) as c:
+                    return c.post(url, auth=self._auth, json=body)
+            return self._client.post(url, auth=self._auth, json=body)
+
+        resp = call_with_retry(_do)  # D18: ride out transient tunnel failures
         if not resp.is_success:
             raise CoordinatorError(resp.status_code, resp.text)
         return resp.json()

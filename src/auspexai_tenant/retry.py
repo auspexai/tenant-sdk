@@ -2,11 +2,13 @@
 
 The long-running driver loop (`driver.run_until`) polls the coordinator over a
 Cloudflare tunnel where transient failures are NORMAL, not exceptional: 502/503/504
-edge pages, read timeouts, and truncated chunked reads (`httpx.RemoteProtocolError`,
-a `TransportError`). Before D18 a single blip raised straight out of the poll and
-killed the driver — it exited without aborting or a resume hint, orphaning an
-`approved` run that the dashboard still showed as healthy (the C16 incident's third
-finding).
+edge pages, the Cloudflare origin-down 520-524/530 pages (the tunnel/coordinator
+momentarily unreachable — a reconnect or a local WAN blip), read timeouts, and
+truncated chunked reads (`httpx.RemoteProtocolError`, a `TransportError`). Before
+D18 a single blip raised straight out of the poll and killed the driver — it exited
+without aborting or a resume hint, orphaning an `approved` run that the dashboard
+still showed as healthy (the C16 incident's third finding; and again 2026-07-09
+when a 502 outlasted the then-too-short budget).
 
 `call_with_retry` wraps ONE HTTP call: it retries the TRANSIENT class with bounded,
 jittered exponential backoff and re-raises only after the budget is spent — at which
@@ -26,10 +28,22 @@ from collections.abc import Callable
 
 import httpx
 
-# Cloudflare / edge transients a retry usually rides out. 5xx only — a 4xx is a real
-# client error the caller must see immediately.
-_TRANSIENT_STATUS = frozenset({502, 503, 504})
-_DEFAULT_ATTEMPTS = 5
+# Cloudflare / edge transients a retry usually rides out — a 4xx is a real client
+# error the caller must see immediately, but these are all "the tunnel/origin is
+# momentarily unreachable, try again":
+#   502/503/504 — standard bad-gateway / unavailable / gateway-timeout.
+#   520-524, 530 — Cloudflare ORIGIN-DOWN codes: the edge is up but cloudflared /
+#     the coordinator behind it is unreachable (a tunnel reconnect, a local WAN
+#     blip). 530 is the one paired with the "Error 1033" tunnel page — the exact
+#     failure that killed a real overnight driver (2026-07-09, exp-omJ9jjXw) when
+#     it was NOT retried. These MUST be ridden out, not treated as fatal.
+_TRANSIENT_STATUS = frozenset({502, 503, 504, 520, 521, 522, 523, 524, 530})
+# Budget sized to ride out a typical tunnel reconnect / short WAN blip (seconds to
+# a couple minutes) on an UNATTENDED overnight driver, while still giving up
+# (resumably, from the journal) on a genuine multi-hour outage. Backoff sum with
+# the defaults below ≈ 1-2.7 min (was ~5-11 s at 5 attempts / 8 s cap — far too
+# short; a driver died on a 502 that outlasted it).
+_DEFAULT_ATTEMPTS = 9
 
 
 def call_with_retry(
@@ -37,13 +51,14 @@ def call_with_retry(
     *,
     attempts: int = _DEFAULT_ATTEMPTS,
     base_delay: float = 0.5,
-    max_delay: float = 8.0,
+    max_delay: float = 45.0,
     sleep: Callable[[float], None] = time.sleep,
     rand: Callable[[], float] = random.random,
 ) -> httpx.Response:
     """Call `fn` (which performs one HTTP request), retrying TRANSIENT failures —
     `httpx.TransportError` (connect/read timeout, connection reset, truncated
-    chunked read) and a 502/503/504 response — with bounded, jittered exponential
+    chunked read) and a transient status (`_TRANSIENT_STATUS`: 502/503/504 plus
+    the Cloudflare origin-down 520-524/530) — with bounded, jittered exponential
     backoff.
 
     Returns the response for a success, a non-transient status, or the final

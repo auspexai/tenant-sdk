@@ -58,6 +58,26 @@ def test_retries_transient_5xx_then_succeeds():
     assert len(slept) == 1
 
 
+def test_retries_cloudflare_origin_down_codes():
+    """Cloudflare origin-down pages (520-524, 530 — the tunnel / coordinator
+    momentarily unreachable) are transient → retried, not fatal. 530 is the code
+    paired with the Error 1033 tunnel page that killed a real overnight driver
+    (exp-omJ9jjXw) before it was retryable."""
+    from auspexai_tenant.retry import _TRANSIENT_STATUS
+
+    for code in (520, 521, 522, 523, 524, 530):
+        assert code in _TRANSIENT_STATUS, code
+    codes = [530, 200]
+
+    def fn():
+        return httpx.Response(codes.pop(0))
+
+    slept, sleep = _recorder()
+    resp = call_with_retry(fn, sleep=sleep, rand=lambda: 0.5)
+    assert resp.status_code == 200
+    assert len(slept) == 1
+
+
 def test_passes_4xx_through_immediately():
     """A 4xx (e.g. a semantic 409) is NOT transient — returned at once, no retry, so
     the caller's normal status handling runs unchanged."""
