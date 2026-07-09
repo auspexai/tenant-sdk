@@ -40,6 +40,7 @@ class FakeExperiment:
         self._withheld: list[Unit] = []
         self.finalized = False
         self.aborted = False
+        self.heartbeats: list[tuple] = []  # (status, reason, round) — driver liveness pings
 
     def _blocked_id(self, unit_id: str) -> bool:
         return any(unit_id.startswith(p) for p in self._blocked)
@@ -91,6 +92,9 @@ class FakeExperiment:
     def abort(self) -> dict:
         self.aborted = True
         return {}
+
+    def driver_heartbeat(self, status, *, reason=None, round=None, run_id=None) -> None:
+        self.heartbeats.append((status, reason, round))
 
     def attestation(self, *, checkpoint=False):
         return None
@@ -160,6 +164,24 @@ def test_finalize_called_on_convergence(tmp_path) -> None:
         wake=_wake(),
     )
     assert fake.finalized is True
+
+
+def test_emits_driving_and_finalizing_heartbeats(tmp_path) -> None:
+    """Liveness telemetry: a `driving` ping each round the driver feeds, and a
+    `finalizing` ping on the clean finish — so the coordinator can tell a live /
+    finishing driver from a dead one (a silence gap after the last `driving`)."""
+    fake = FakeExperiment()
+    run_until(
+        fake,
+        condition=lambda a: a.total >= 2,
+        next_batch=_batch_of(2),
+        reduce=Counter(),
+        journal=tmp_path / "j",
+        wake=_wake(),
+    )
+    statuses = [hb[0] for hb in fake.heartbeats]
+    assert "driving" in statuses
+    assert statuses[-1] == "finalizing"
 
 
 def test_max_rounds(tmp_path) -> None:

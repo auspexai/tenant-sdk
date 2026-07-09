@@ -69,6 +69,9 @@ class GeometryFake:
     def abort(self) -> dict:
         return {}
 
+    def driver_heartbeat(self, status, *, reason=None, round=None, run_id=None) -> None:
+        pass
+
     def attestation(self, *, checkpoint=False):
         return None
 

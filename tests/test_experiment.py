@@ -198,6 +198,34 @@ def test_abort_posts_to_action() -> None:
     assert _experiment(handler).abort()["status"] == "aborted"
 
 
+def test_driver_heartbeat_posts_status_reason_round() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(204)
+
+    _experiment(handler).driver_heartbeat("exiting", reason="http_502", round=7, run_id="run-9")
+    req = seen[-1]
+    assert req.url.path == f"/api/v0/experiments/{EXP_ID}/driver-heartbeat"
+    assert json.loads(req.content) == {
+        "status": "exiting",
+        "reason": "http_502",
+        "round": 7,
+        "run_id": "run-9",
+    }
+
+
+def test_driver_heartbeat_never_raises() -> None:
+    """Telemetry is strictly best-effort: a transport failure (the very condition
+    we want to record) must NOT propagate out and disturb the driver loop."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("tunnel down")
+
+    _experiment(handler).driver_heartbeat("driving", round=1)  # must not raise
+
+
 def test_action_409_raises_lifecycle_conflict() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return _conflict("finalize_not_applicable")

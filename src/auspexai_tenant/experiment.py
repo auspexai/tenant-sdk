@@ -286,6 +286,41 @@ class Experiment:
             raise CoordinatorError(resp.status_code, resp.text)
         return resp.json()
 
+    def driver_heartbeat(
+        self,
+        status: str,
+        *,
+        reason: str | None = None,
+        round: int | None = None,
+        run_id: str | None = None,
+    ) -> None:
+        """Best-effort driver-liveness ping (`POST /driver-heartbeat`). Sent each
+        round (status='driving') and on the driver's exit paths ('finalizing' /
+        'exiting', with a reason) so the coordinator can SEE a stalled/stranded
+        driver and WHY it stopped — the diagnosability an off-coordinator driver
+        otherwise never gives it.
+
+        NEVER raises and NEVER retries: a single short-timeout attempt, all errors
+        swallowed. Telemetry must not disturb — or block — the run loop; a missed
+        heartbeat is caught by the next one (or, on a real exit, by the gap since
+        the last 'driving')."""
+        body: dict[str, Any] = {"status": status}
+        if reason is not None:
+            body["reason"] = reason[:500]
+        if round is not None:
+            body["round"] = round
+        if run_id is not None:
+            body["run_id"] = run_id
+        url = f"{self._base}/api/v0/experiments/{self.experiment_id}/driver-heartbeat"
+        try:
+            if self._client is None:
+                with httpx.Client(timeout=min(self._timeout, 10.0)) as c:
+                    c.post(url, auth=self._auth, json=body)
+            else:
+                self._client.post(url, auth=self._auth, json=body)
+        except Exception:
+            pass
+
     # ---- reads (poll = source of truth, design note §2) --------------------
 
     def progress(self) -> Progress:

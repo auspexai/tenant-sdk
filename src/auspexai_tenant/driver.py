@@ -242,6 +242,9 @@ def run_until(
                 round_, [{"unit_id": u.unit_id, "payload": u.payload} for u in units]
             )
         _submit_idempotent(experiment, units, round_)
+        # Liveness: the driver just fed round `round_` — tell the coordinator it's
+        # alive (best-effort; a silence gap after the last of these = a dead driver).
+        experiment.driver_heartbeat("driving", round=round_)
 
         # --- poll-fold this round until complete / converged / stalled ---
         stalled_polls = 0
@@ -471,6 +474,9 @@ def _terminate(
         # the partial-round folds weren't journaled at a boundary — persist now so
         # resume restores the exact aggregate behind the published partial result.
         jrnl.record_round_done(round_, cursor, reduce.checkpoint())
+    # Liveness: the driver is wrapping up cleanly (converged / max_rounds /
+    # time_capped / exhausted / finalized_partial) — a normal finish, NOT a death.
+    experiment.driver_heartbeat("finalizing", reason=outcome)
     _safe_action(experiment.finalize)
     jrnl.record_finalized()
     att = (

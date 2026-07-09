@@ -198,6 +198,9 @@ class _LifecycleRecorder:
         _LifecycleRecorder.calls.append(("abort", self._id))
         return {"status": "aborted"}
 
+    def driver_heartbeat(self, status, *, reason=None, round=None, run_id=None) -> None:
+        pass  # best-effort telemetry — not part of the finalize/abort assertion
+
 
 def test_run_ctrl_c_finalizes_completed_work_by_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

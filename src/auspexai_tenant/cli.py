@@ -1270,6 +1270,7 @@ def experiment_run(
         # (the coordinator's settle-sweep still wraps it up, or auto-aborts it below
         # the max_units cap if you never resume). To DISCARD the run instead, abort
         # it explicitly: `auspexai-tenant experiment abort <label>`.
+        exp.driver_heartbeat("exiting", reason="interrupted")  # telemetry (best-effort)
         if resumable:
             click.echo(
                 f"\ninterrupted — {experiment_id} left running server-side; "
@@ -1303,6 +1304,15 @@ def experiment_run(
         # server-side and resumable from the journal's last round checkpoint. Surface
         # the explicit choice LOUDLY + non-zero (symmetric with the D14 Ctrl-C path);
         # C16's E14 detector is the backstop that also flags the abandoned run.
+        # Telemetry (best-effort — the tunnel may still be down): record WHY, so the
+        # coordinator shows e.g. `http_502` instead of a silent strand. This is the
+        # exact death that killed exp-omJ9jjXw before the retry budget was widened.
+        _reason = (
+            f"http_{e.status_code}"
+            if isinstance(e, CoordinatorError)
+            else f"transport_{type(e).__name__}"
+        )
+        exp.driver_heartbeat("exiting", reason=_reason)
         click.echo(
             f"\ndriver stopped — coordinator unreachable or erroring ({e}).\n"
             f"{experiment_id} is still running server-side (NOT aborted). Once it is "
