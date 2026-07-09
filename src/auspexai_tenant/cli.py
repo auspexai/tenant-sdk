@@ -320,6 +320,27 @@ _profile_opt = click.option(
     "Default: the base config (or [default_profile] if set).",
 )
 
+_detach_opt = click.option(
+    "--detach",
+    is_flag=True,
+    help="Run the driver as a detached background process (survives a closed "
+    "terminal / dropped SSH — no tmux/nohup). List with `experiment ps`, stop with "
+    "`experiment stop`. Use this to run several experiments concurrently.",
+)
+
+
+def _spawn_detached_and_report(profile: str | None) -> None:
+    """Re-exec the current command minus --detach as a detached driver, then report
+    the handle. Used by `launch`/`run` when --detach is set."""
+    from auspexai_tenant import driver_manager as dm
+
+    argv = [a for a in sys.argv if a != "--detach"]
+    rec = dm.spawn_detached(argv, profile=profile)
+    click.echo(f"detached driver started — pid {rec.pid}, run-id {rec.run_id}")
+    click.echo(f"  log:    {rec.log_path}")
+    click.echo("  status: auspexai-tenant experiment ps")
+    click.echo("  stop:   auspexai-tenant experiment stop " + rec.run_id)
+
 
 def _make_client(coordinator: str, key_path: Path) -> TenantClient:
     try:
@@ -1111,6 +1132,7 @@ def parse_duration(s: str) -> float:
     help="On Ctrl-C, leave the experiment running server-side (resume later with "
     "`experiment run <label>`). Default: Ctrl-C aborts the run cleanly.",
 )
+@_detach_opt
 @_coord_opt
 @_key_opt
 def experiment_run(
@@ -1124,6 +1146,7 @@ def experiment_run(
     resumable: bool,
     coordinator: str,
     key_path: Path,
+    detach: bool = False,
 ) -> None:
     """Drive an autonomic (adaptive / run-until-convergence) experiment, headless.
 
@@ -1135,6 +1158,11 @@ def experiment_run(
     Loads your DriverSpec factory and runs the control loop — submit → poll agreed
     results → fold → test condition → next batch or finalize — until convergence,
     max_rounds, exhaustion, or a stall policy. Resumable via --journal."""
+    # --detach: re-exec in the background (survives the terminal) and return; the
+    # detached child runs the normal drive below and records itself.
+    if detach:
+        _spawn_detached_and_report(profile)
+        return
     from auspexai_tenant.driver import DriverSpec, run_until
     from auspexai_tenant.experiment import Experiment, LifecycleConflictError
     from auspexai_tenant.experiment_config import load_experiment_config
@@ -1174,6 +1202,9 @@ def experiment_run(
     key = _load_key(key_path)
     client = _make_client(coordinator, key_path)
     experiment_id, label = _resolve_experiment(client, target)
+    from auspexai_tenant import driver_manager
+
+    driver_manager.record_experiment(experiment_id, label)  # no-op unless detached
     if journal_path is None:
         journal_path = cfg.journal_path(label)
     click.echo(f"experiment: {experiment_id}  (label {label})")
@@ -1208,6 +1239,7 @@ def experiment_run(
             err=True,
         )
         sys.exit(130)
+    driver_manager.set_status("driving")  # no-op unless detached
     # CLI flag wins over a spec-level cap; either may be unset.
     parsed_cap = parse_duration(duration_cap) if duration_cap is not None else None
     duration_cap_seconds = (
@@ -1387,6 +1419,7 @@ def _wait_for_approval(
     help="On Ctrl-C, leave the experiment running server-side (resume later with "
     "`experiment run latest`). Default: Ctrl-C aborts the run cleanly.",
 )
+@_detach_opt
 @_coord_opt
 @_key_opt
 @click.pass_context
@@ -1404,6 +1437,7 @@ def experiment_launch(
     coordinator: str,
     key_path: Path,
     resumable: bool,
+    detach: bool,
 ) -> None:
     """Build + submit + drive in ONE command — the whole experiment lifecycle.
 
@@ -1423,6 +1457,11 @@ def experiment_launch(
     # Validate the cap up front so a typo fails before the build/submit work.
     if duration_cap is not None:
         parse_duration(duration_cap)
+    # --detach: re-exec this exact command in the background (survives the terminal)
+    # and return. The detached child runs the normal path below and records itself.
+    if detach:
+        _spawn_detached_and_report(profile)
+        return
     cfg = load_experiment_config(config_path, profile=profile)
     # Resolve the package dir from the experiment.toml the walk-up found, so plain
     # `launch` works from anywhere in the repo — not only the dir that holds pkg/.
@@ -1474,6 +1513,11 @@ def experiment_launch(
             leftover.unlink(missing_ok=True)
     client = _make_client(coordinator, key_path)
     experiment_id, label = _resolve_experiment(client, "latest")
+    # If we're the detached child, stamp the experiment into our record so `ps`
+    # can show it (no-op in a foreground launch).
+    from auspexai_tenant import driver_manager
+
+    driver_manager.record_experiment(experiment_id, label)
     _record_benchmark_declaration(cfg, experiment_id, label)
     if no_drive:
         click.echo("\nbuilt + submitted. Approve it, then: auspexai-tenant experiment run latest")
@@ -1514,6 +1558,7 @@ def experiment_launch(
             )
         sys.exit(130)
     click.echo(f"approved ({status}) — driving.")
+    driver_manager.set_status("driving")
     ctx.invoke(
         experiment_run,
         target="latest",
@@ -1527,6 +1572,77 @@ def experiment_launch(
         coordinator=coordinator,
         key_path=key_path,
     )
+
+
+def _fmt_uptime(seconds: float) -> str:
+    s = int(seconds)
+    h, s = divmod(s, 3600)
+    m, s = divmod(s, 60)
+    if h:
+        return f"{h}h{m:02d}m"
+    if m:
+        return f"{m}m{s:02d}s"
+    return f"{s}s"
+
+
+@experiment.command("ps")
+@click.option("--prune", is_flag=True, help="Also remove records of drivers that have exited.")
+def experiment_ps(prune: bool) -> None:
+    """List detached experiment drivers (`launch`/`run --detach`) and whether each is
+    still alive — the visibility a foreground driver never gave you. A `stopped` row
+    whose experiment isn't finished is a driver that died; resume it with
+    `experiment run <exp-id> --detach`."""
+    from auspexai_tenant import driver_manager as dm
+
+    if prune:
+        click.echo(f"pruned {dm.prune_dead()} exited driver record(s).")
+    recs = dm.list_drivers()
+    if not recs:
+        click.echo("no detached drivers. start one with:")
+        click.echo("  auspexai-tenant experiment launch --profile <name> --detach")
+        return
+    now = time.time()
+    click.echo(f"{'STATUS':9} {'PROFILE':18} {'EXPERIMENT':14} {'UPTIME':>7}  RUN-ID")
+    for r in recs:
+        alive = r.alive
+        up = r.uptime_seconds(now)
+        up_s = _fmt_uptime(up) if (alive and up is not None) else "-"
+        click.echo(
+            f"{('running' if alive else 'stopped'):9} {(r.profile or 'base'):18} "
+            f"{(r.experiment_id or '(pending)'):14} {up_s:>7}  {r.run_id}"
+        )
+    click.echo("")
+    click.echo("stop: auspexai-tenant experiment stop <run-id|exp-id>   logs: <run-dir>/driver.log")
+
+
+@experiment.command("stop")
+@click.argument("target", required=False)
+@click.option("--all", "stop_all", is_flag=True, help="Stop every live detached driver.")
+@click.option("--prune", is_flag=True, help="After stopping, remove records of exited drivers.")
+def experiment_stop(target: str | None, stop_all: bool, prune: bool) -> None:
+    """Stop a detached driver — SIGINT, the same clean Ctrl-C path (aborts the run,
+    or leaves it server-side if it was started --resumable). TARGET matches a run-id,
+    experiment id, label, or profile."""
+    from auspexai_tenant import driver_manager as dm
+
+    if stop_all:
+        targets = [r for r in dm.list_drivers() if r.alive]
+        if not targets:
+            click.echo("no live detached drivers.")
+            return
+    elif target:
+        targets = [r for r in dm.find_drivers(target) if r.alive]
+        if not targets:
+            click.echo(f"no live driver matches {target!r} (see `experiment ps`).", err=True)
+            sys.exit(1)
+    else:
+        click.echo("give a TARGET (run-id / experiment-id / profile) or --all.", err=True)
+        sys.exit(2)
+    for r in targets:
+        dm.stop_driver(r)
+        click.echo(f"stopped {r.experiment_id or r.run_id} (pid {r.pid})")
+    if prune:
+        dm.prune_dead()
 
 
 @experiment.command("reduce")

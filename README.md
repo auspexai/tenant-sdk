@@ -93,6 +93,26 @@ coordinator (`https://coord.auspexai.network`).
   adaptive experiment headlessly. `experiment reduce` batch-reduces a
   completed consensus set.
 
+**Long runs & several at once — `--detach`.** `launch`/`run` are the driver:
+the process must stay alive for the whole run, so a long experiment ties up a
+terminal and a Ctrl-C or dropped SSH orphans it. Pass **`--detach`** and the SDK
+runs the driver as a background process (its own session — survives the terminal,
+no `tmux`/`nohup`) and returns immediately:
+
+```sh
+experiment launch --profile mypanel-a --detach
+experiment launch --profile mypanel-b --detach     # run several concurrently
+experiment ps                                       # which drivers are live
+experiment stop <run-id|exp-id>                     # stop one (SIGINT, clean abort)
+```
+
+- **`experiment ps`** — lists detached drivers with `running`/`stopped`, profile,
+  experiment id, and uptime. A `stopped` row whose experiment isn't finished is a
+  driver that died — resume it with `experiment run <exp-id> --detach`.
+- **`experiment stop <target>`** — SIGINT (the same clean Ctrl-C abort path);
+  `--all` stops every live driver. Logs are at `<run-dir>/driver.log`
+  (`~/.local/share/auspexai-tenant/drivers/<run-id>/`).
+
 ### 4. Watch
 
 - `experiment list` / `status` / `results` (consensus by default, `--raw`
@@ -152,7 +172,7 @@ verifies all of it independently:
 |---|---|
 | `key` | Ed25519 tenant keypair (generate, pubkey) |
 | `manifest` | validate, sign, upload an experiment manifest |
-| `experiment` | build, submit, launch (one-command lifecycle), list, status, run (autonomic driver), results, receipts, attestation, reduce, export, deviate (declare a signed deviation from the pre-registered design) |
+| `experiment` | build, submit, launch (one-command lifecycle; `--detach` to background the driver), run (autonomic driver; `--detach`), ps / stop (manage detached drivers), list, status, results, receipts, attestation, reduce, export, deviate (declare a signed deviation from the pre-registered design) |
 | `benchmark` | Score drift in envelope units vs a declared reference; `publish` submits a signed, self-grounding entry to the public board (machine-admitted). Declare `[benchmark] reference` once in `experiment.toml` and `launch` scores each run automatically. |
 | `bundle` | verify a saved evidence bundle offline; write it as a CSV/Parquet table |
 | `model` | browse the network model catalog |
