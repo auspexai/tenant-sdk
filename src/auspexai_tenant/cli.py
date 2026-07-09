@@ -1130,7 +1130,8 @@ def parse_duration(s: str) -> float:
     "--resumable",
     is_flag=True,
     help="On Ctrl-C, leave the experiment running server-side (resume later with "
-    "`experiment run <label>`). Default: Ctrl-C aborts the run cleanly.",
+    "`experiment run <label>`). Default: Ctrl-C finalizes the run over its completed "
+    "work (nothing done is discarded); `experiment abort <label>` discards instead.",
 )
 @_detach_opt
 @_coord_opt
@@ -1261,10 +1262,14 @@ def experiment_run(
             )
         )
     except KeyboardInterrupt:
-        # D14 (client→server coupling): Ctrl-C kills the run as everyone expects.
-        # By default that aborts the experiment server-side too, so a killed launch
-        # never leaves a silent orphan that auto-approves and sits idle. --resumable
-        # opts OUT (leave it running; resume with `experiment run <label>`).
+        # D14 (client→server coupling): Ctrl-C stops the driver. By DEFAULT we
+        # FINALIZE the run — the units already completed are KEPT as the (partial)
+        # result set and the coordinator wraps it up (auto-completes over what
+        # landed). Completed, consensus-reached work is never thrown away on an
+        # interrupt. --resumable opts OUT: leave it running to add more units later
+        # (the coordinator's settle-sweep still wraps it up, or auto-aborts it below
+        # the max_units cap if you never resume). To DISCARD the run instead, abort
+        # it explicitly: `auspexai-tenant experiment abort <label>`.
         if resumable:
             click.echo(
                 f"\ninterrupted — {experiment_id} left running server-side; "
@@ -1272,15 +1277,22 @@ def experiment_run(
                 err=True,
             )
             sys.exit(130)
-        click.echo(f"\ninterrupted — aborting {experiment_id} …", err=True)
+        click.echo(
+            f"\ninterrupted — finalizing {experiment_id} over its completed work …", err=True
+        )
         try:
-            exp.abort()
-            click.echo(f"aborted {experiment_id}.", err=True)
+            exp.finalize()
+            click.echo(
+                f"finalized {experiment_id}; the coordinator will wrap up the completed units. "
+                f"(to discard instead: auspexai-tenant experiment abort {label})",
+                err=True,
+            )
         except LifecycleConflictError:
             click.echo(f"{experiment_id} was already terminal.", err=True)
         except (CoordinatorError, httpx.RequestError) as e:
             click.echo(
-                f"WARNING: couldn't abort {experiment_id} ({e}); abort it from the dashboard.",
+                f"WARNING: couldn't finalize {experiment_id} ({e}); "
+                f"finalize or abort it from the dashboard.",
                 err=True,
             )
         sys.exit(130)
@@ -1541,10 +1553,11 @@ def experiment_launch(
     except KeyboardInterrupt:
         # D14 tail: a Ctrl-C in the submit→approval window previously exited with
         # the experiment still submitted server-side, which then auto-approved as
-        # a driverless orphan (exp-oK4PrkRP). Same semantics as the drive-loop
-        # handler below: abort by default, --resumable opts out. SUBMITTED →
-        # ABORTED is a valid researcher transition, so this never 409s in the
-        # normal case.
+        # a driverless orphan (exp-oK4PrkRP). No work units exist yet at this stage
+        # — there is nothing to keep — so abort by default (--resumable opts out).
+        # (Contrast the drive-loop handler, which FINALIZES to keep completed work.)
+        # SUBMITTED → ABORTED is a valid researcher transition, so this never 409s
+        # in the normal case.
         from auspexai_tenant.experiment import Experiment, LifecycleConflictError
 
         if resumable:
@@ -1634,9 +1647,9 @@ def experiment_ps(prune: bool) -> None:
 @click.option("--all", "stop_all", is_flag=True, help="Stop every live detached driver.")
 @click.option("--prune", is_flag=True, help="After stopping, remove records of exited drivers.")
 def experiment_stop(target: str | None, stop_all: bool, prune: bool) -> None:
-    """Stop a detached driver — SIGINT, the same clean Ctrl-C path (aborts the run,
-    or leaves it server-side if it was started --resumable). TARGET matches a run-id,
-    experiment id, label, or profile."""
+    """Stop a detached driver — SIGINT, the same clean Ctrl-C path (finalizes the run
+    over its completed work, or leaves it server-side if it was started --resumable).
+    TARGET matches a run-id, experiment id, label, or profile."""
     from auspexai_tenant import driver_manager as dm
 
     if stop_all:

@@ -100,8 +100,9 @@ def test_launch_resolves_pkg_next_to_toml_from_subdir(
 #
 # A Ctrl-C while `launch` waits for maintainer approval previously exited with
 # the experiment still submitted server-side — it then auto-approved as a
-# driverless orphan (exp-oK4PrkRP). The launch handler now mirrors the
-# drive-loop D14 semantics: abort by default; --resumable leaves it submitted.
+# driverless orphan (exp-oK4PrkRP). At the approval-wait stage no work units
+# exist yet, so the handler aborts by default (--resumable leaves it submitted).
+# (The drive-loop handler differs — it FINALIZES to keep completed work.)
 
 
 class _AbortRecorder:
@@ -178,6 +179,124 @@ def test_launch_ctrl_c_resumable_leaves_submitted(
     r = CliRunner().invoke(main, ["experiment", "launch", "--resumable"], standalone_mode=False)
     assert isinstance(r.exception, SystemExit) and r.exception.code == 130
     assert _AbortRecorder.aborted == []  # left submitted server-side by request
+
+
+class _LifecycleRecorder:
+    """Records finalize/abort so a drive-loop interrupt test can assert the run's
+    completed work was KEPT (finalized), not thrown away (aborted)."""
+
+    calls: ClassVar[list[tuple[str, str]]] = []
+
+    def __init__(self, coordinator: str, key, experiment_id: str) -> None:
+        self._id = experiment_id
+
+    def finalize(self) -> dict:
+        _LifecycleRecorder.calls.append(("finalize", self._id))
+        return {"status": "approved"}
+
+    def abort(self) -> dict:
+        _LifecycleRecorder.calls.append(("abort", self._id))
+        return {"status": "aborted"}
+
+
+def test_run_ctrl_c_finalizes_completed_work_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ctrl-C during the drive loop FINALIZES the run (keeps the units already
+    completed) rather than aborting it — completed, consensus-reached work is never
+    discarded on an interrupt. The coordinator then wraps up the finalized run."""
+    from types import SimpleNamespace
+
+    import auspexai_tenant.cli as cli_mod
+    import auspexai_tenant.driver as driver_mod
+    import auspexai_tenant.experiment as experiment_mod
+    import auspexai_tenant.experiment_config as ec_mod
+    from auspexai_tenant import Counter
+    from auspexai_tenant.driver import DriverSpec
+
+    spec = DriverSpec(
+        condition=lambda agg: False,
+        next_batch=lambda agg, rnd: None,
+        reduce=Counter(bucket=lambda r: "x"),
+    )
+    cfg = SimpleNamespace(
+        driver_path=None, source_path=None, available_profiles=[], active_profile=None
+    )
+    monkeypatch.setattr(ec_mod, "load_experiment_config", lambda config_path, profile=None: cfg)
+    monkeypatch.setattr(cli_mod, "_load_attr", lambda spec_str: lambda cfg: spec)
+    monkeypatch.setattr(cli_mod, "_load_key", lambda key_path: object())
+    monkeypatch.setattr(cli_mod, "_make_client", lambda coordinator, key_path: object())
+    monkeypatch.setattr(cli_mod, "_resolve_experiment", lambda client, target: ("exp-1", "x"))
+    monkeypatch.setattr(cli_mod, "_wait_for_approval", lambda *a, **k: "approved")
+
+    def _interrupted_run(*a, **k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(driver_mod, "run_until", _interrupted_run)
+    _LifecycleRecorder.calls = []
+    monkeypatch.setattr(experiment_mod, "Experiment", _LifecycleRecorder)
+
+    r = CliRunner().invoke(
+        main,
+        ["experiment", "run", "exp-1", "--driver", "x:y", "--journal", str(tmp_path / "j.jsonl")],
+        standalone_mode=False,
+    )
+    assert isinstance(r.exception, SystemExit) and r.exception.code == 130
+    assert _LifecycleRecorder.calls == [("finalize", "exp-1")]  # kept, not aborted
+
+
+def test_run_ctrl_c_resumable_leaves_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--resumable opts out of finalize: the run is left running server-side (neither
+    finalized nor aborted) so the researcher can resume and add more units."""
+    from types import SimpleNamespace
+
+    import auspexai_tenant.cli as cli_mod
+    import auspexai_tenant.driver as driver_mod
+    import auspexai_tenant.experiment as experiment_mod
+    import auspexai_tenant.experiment_config as ec_mod
+    from auspexai_tenant import Counter
+    from auspexai_tenant.driver import DriverSpec
+
+    spec = DriverSpec(
+        condition=lambda agg: False,
+        next_batch=lambda agg, rnd: None,
+        reduce=Counter(bucket=lambda r: "x"),
+    )
+    cfg = SimpleNamespace(
+        driver_path=None, source_path=None, available_profiles=[], active_profile=None
+    )
+    monkeypatch.setattr(ec_mod, "load_experiment_config", lambda config_path, profile=None: cfg)
+    monkeypatch.setattr(cli_mod, "_load_attr", lambda spec_str: lambda cfg: spec)
+    monkeypatch.setattr(cli_mod, "_load_key", lambda key_path: object())
+    monkeypatch.setattr(cli_mod, "_make_client", lambda coordinator, key_path: object())
+    monkeypatch.setattr(cli_mod, "_resolve_experiment", lambda client, target: ("exp-1", "x"))
+    monkeypatch.setattr(cli_mod, "_wait_for_approval", lambda *a, **k: "approved")
+
+    def _interrupted_run(*a, **k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(driver_mod, "run_until", _interrupted_run)
+    _LifecycleRecorder.calls = []
+    monkeypatch.setattr(experiment_mod, "Experiment", _LifecycleRecorder)
+
+    r = CliRunner().invoke(
+        main,
+        [
+            "experiment",
+            "run",
+            "exp-1",
+            "--driver",
+            "x:y",
+            "--resumable",
+            "--journal",
+            str(tmp_path / "j.jsonl"),
+        ],
+        standalone_mode=False,
+    )
+    assert isinstance(r.exception, SystemExit) and r.exception.code == 130
+    assert _LifecycleRecorder.calls == []  # neither finalized nor aborted — left running
 
 
 def test_launch_resolves_its_own_stamped_label_not_latest(
