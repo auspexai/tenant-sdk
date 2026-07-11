@@ -139,7 +139,7 @@ pivot = series.pivot_table(index="output.probe_id", columns="run",
                            values="output.response_sha256", aggfunc="first")
 # a row whose hash changes column-to-column drifted between runs
 ```
-*(A first-class longitudinal surface for this is planned — D16.4. The recipe above is the manual version.)*
+*(A first-class longitudinal multi-run timeline view is still planned. The recipe above is the manual version.)*
 
 **No-code path.** `bundle table -o results.csv`, then pivot in Excel/Sheets, or `read.csv` in R. The `--data-dictionary` output is your column legend.
 
