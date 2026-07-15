@@ -105,3 +105,32 @@ def test_experiment_export_default_lands_in_runs_layout(
     result = CliRunner().invoke(main, ["experiment", "export", "exp-x", "--no-verify"])
     assert result.exit_code == 0, result.output
     assert (tmp_path / "runs" / "drift-a1" / "bundle.json").exists()
+
+
+def test_experiment_export_honors_runs_dir_pin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With `[runs].dir` pinned in experiment.toml, the default bundle path resolves
+    to the SAME base the driver/collector write to (runs_base(cfg.runs_dir)) — NOT a
+    stray cwd `./runs`. Guards the writer/reader base-mismatch class: raw_content.jsonl
+    and bundle.json must co-locate regardless of the pin's value or cwd."""
+    monkeypatch.delenv("AUSPEXAI_RUNS_DIR", raising=False)
+
+    class FakeClient:
+        def get_experiment(self, experiment_id: str) -> dict[str, object]:
+            return {"experiment_id": experiment_id, "tenant_experiment_label": "drift-a1"}
+
+        def export(self, experiment_id: str) -> dict[str, object]:
+            return {"transfer": {"transfer_id": "t-1", "root_kind": "attestation"}}
+
+    monkeypatch.setattr(cli_mod, "_make_client", lambda c, k: FakeClient())
+    monkeypatch.chdir(tmp_path)
+    pinned = tmp_path / "pinned_base"
+    (tmp_path / "experiment.toml").write_text(f'[runs]\ndir = "{pinned}"\n')
+    (tmp_path / "runs").mkdir()  # a decoy ./runs the OLD code would have used
+
+    result = CliRunner().invoke(main, ["experiment", "export", "exp-x", "--no-verify"])
+    assert result.exit_code == 0, result.output
+    # Lands under the PIN, not the decoy ./runs.
+    assert (pinned / "drift-a1" / "bundle.json").exists()
+    assert not (tmp_path / "runs" / "drift-a1").exists()

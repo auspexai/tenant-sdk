@@ -530,7 +530,23 @@ def experiment_export(
     # journal under runs/<label>/.
     exp_id, label = _resolve_experiment(client, target)
     bundle = _run(lambda: client.export(exp_id))
-    out = output or RunLayout(label).bundle_path()
+    # Honor [runs].dir so the bundle co-locates with the run's OTHER local
+    # artifacts (journal, raw_content.jsonl, benchmark scores): the writer
+    # (driver/collector, which resolves `runs_base(cfg.runs_dir)`) and this reader
+    # must land on the SAME base, regardless of cwd or the pin's value. A walk-up
+    # finds the experiment.toml when export runs from the repo; standalone — or an
+    # unreadable toml — falls back to the SDK default, since export must never fail
+    # to save the bundle over a config problem.
+    from auspexai_tenant.runs import runs_base
+
+    runs_dir = None
+    try:
+        from auspexai_tenant.experiment_config import load_experiment_config
+
+        runs_dir = load_experiment_config(None).runs_dir
+    except Exception:
+        runs_dir = None
+    out = output or RunLayout(label, base=runs_base(runs_dir)).bundle_path()
     # The coordinator already delivered (and armed collection age-off) by the
     # time we write, so a missing -o parent dir must NOT lose the bundle: make
     # the parent before writing. Re-export re-delivers idempotently until
