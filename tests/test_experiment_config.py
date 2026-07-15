@@ -214,3 +214,34 @@ def test_explicit_profile_missing_file_raises(tmp_path: Path):
 def test_available_profiles(tmp_path: Path):
     cfg = load_experiment_config(_write_profile_toml(tmp_path))
     assert cfg.available_profiles == ["research", "starter"]
+
+
+def test_capture_raw_and_interval_merge_from_profile(tmp_path: Path):
+    # D20: `[capture]` declared UNDER a profile must surface via cfg.capture_raw —
+    # the vigiles capture_* profiles rely on this (profile [capture] deep-merges
+    # onto the base table). The default interval applies unless overridden.
+    (tmp_path / "experiment.toml").write_text(
+        "[experiment]\n"
+        'label = "vig"\n'
+        "[profiles.capture_x]\n"
+        'description = "raw capture on"\n'
+        "[profiles.capture_x.capture]\n"
+        "raw = true\n"
+        "collect_interval_seconds = 90\n"
+        "[profiles.plain]\n"
+        'description = "no capture"\n'
+    )
+    off = load_experiment_config(tmp_path, profile="plain")
+    assert off.capture_raw is False
+    assert off.capture_collect_interval == 180.0  # default when unset
+
+    on = load_experiment_config(tmp_path, profile="capture_x")
+    assert on.capture_raw is True
+    assert on.capture_collect_interval == 90.0
+
+
+def test_capture_collect_interval_bad_value_falls_back(tmp_path: Path):
+    (tmp_path / "experiment.toml").write_text(
+        "[capture]\nraw = true\ncollect_interval_seconds = 0\n"
+    )
+    assert load_experiment_config(tmp_path).capture_collect_interval == 180.0

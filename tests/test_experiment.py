@@ -340,3 +340,51 @@ def test_attestation_checkpoint_passes_through() -> None:
     att = _experiment(handler).attestation(checkpoint=True)
     assert att.merkle_root == "root"
     assert seen[-1].url.params.get("checkpoint") == "true"
+
+
+# ---- D20 raw-content collection -------------------------------------------
+
+
+def test_collect_raw_content_parses_raw_and_signatures() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        assert request.method == "GET"
+        assert request.url.path == f"/api/v0/experiments/{EXP_ID}/raw-content"
+        return httpx.Response(
+            200,
+            json={
+                "raw": {"r1": "hello world", "r2": "second"},
+                "signatures": {
+                    "r1": {"raw_signature": "sigA", "worker_pubkey": "pkA"},
+                    # r2 intentionally absent from signatures → None fields.
+                },
+                "count": 2,
+            },
+        )
+
+    out = _experiment(handler).collect_raw_content()
+    assert out["r1"] == {"raw": "hello world", "raw_signature": "sigA", "worker_pubkey": "pkA"}
+    assert out["r2"] == {"raw": "second", "raw_signature": None, "worker_pubkey": None}
+    # RFC 9421 signed even though it is a GET.
+    assert "Signature" in seen[-1].headers
+
+
+def test_collect_raw_content_raises_coordinator_error_on_403() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            json={"error": {"code": "research_standing_too_low", "message": "needs R3"}},
+        )
+
+    with pytest.raises(CoordinatorError) as ei:
+        _experiment(handler).collect_raw_content()
+    assert ei.value.status_code == 403
+
+
+def test_collect_raw_content_empty_buffer() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"raw": {}, "signatures": {}, "count": 0})
+
+    assert _experiment(handler).collect_raw_content() == {}

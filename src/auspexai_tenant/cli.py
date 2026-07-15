@@ -1332,6 +1332,26 @@ def experiment_run(
     duration_cap_seconds = (
         parsed_cap if parsed_cap is not None else getattr(spec, "duration_cap_seconds", None)
     )
+    # D20: when the run declares `[capture] raw`, harvest the coordinator's
+    # ephemeral raw-content buffer LIVE for the whole life of this driver process —
+    # the buffer is in-memory + TTL'd (raw never rests on the coordinator), so
+    # nothing is collected unless we poll DURING the run. A sidecar so the run loop
+    # stays untouched; drained in `finally` so the tail is captured on every exit
+    # path (converge / Ctrl-C / coordinator error).
+    raw_collector = None
+    if cfg.capture_raw:
+        from auspexai_tenant.raw_collector import RawContentCollector
+        from auspexai_tenant.runs import RunLayout, runs_base
+
+        _raw_sink = (
+            RunLayout(label, base=runs_base(cfg.runs_dir)).ensure().dir / "raw_content.jsonl"
+        )
+        raw_collector = RawContentCollector(exp, _raw_sink, interval_s=cfg.capture_collect_interval)
+        click.echo(
+            f"raw-content: capturing (R3) → {_raw_sink}  "
+            f"(poll every {cfg.capture_collect_interval:.0f}s)"
+        )
+        raw_collector.start()
     try:
         result = _run(
             lambda: run_until(
@@ -1408,6 +1428,19 @@ def experiment_run(
             err=True,
         )
         sys.exit(1)
+    finally:
+        # Drain the raw-content sidecar on EVERY exit path (normal finish, Ctrl-C,
+        # or coordinator error → SystemExit still runs `finally`): stop the poller,
+        # capture the tail, and report. Never raises — cleanup must not turn a
+        # finished run into a crash.
+        if raw_collector is not None:
+            _raw_n = raw_collector.stop_and_drain()
+            if raw_collector.disabled_reason:
+                click.echo(
+                    f"raw-content: NOT collected — {raw_collector.disabled_reason}.", err=True
+                )
+            else:
+                click.echo(f"raw-content: {_raw_n} output(s) collected → {raw_collector.sink_path}")
     click.echo(f"outcome:  {result.outcome}")
     click.echo(f"rounds:   {result.rounds}")
     if result.outcome == "time_capped":

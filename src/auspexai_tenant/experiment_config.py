@@ -80,6 +80,25 @@ class ExperimentConfig:
         return bool(c.get("raw")) if isinstance(c, dict) else False
 
     @property
+    def capture_collect_interval(self) -> float:
+        """`[capture] collect_interval_seconds` — how often the driver polls the
+        coordinator's ephemeral raw-content buffer (default 180s, well under the
+        3600s TTL so nothing evicts un-collected). Only consulted when
+        `capture_raw`. A non-positive / unparseable value falls back to the
+        default."""
+        c = self.raw.get("capture")
+        if isinstance(c, dict):
+            v = c.get("collect_interval_seconds")
+            if v is not None:
+                try:
+                    fv = float(v)
+                except (TypeError, ValueError):
+                    fv = 0.0
+                if fv > 0:
+                    return fv
+        return 180.0
+
+    @property
     def benchmark_mode(self) -> str:
         """`[benchmark].mode` — how this run's Drift Benchmark chooses its
         reference. "fixed_reference" (default): score against another experiment's

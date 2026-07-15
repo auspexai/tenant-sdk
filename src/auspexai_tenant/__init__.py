@@ -71,6 +71,7 @@ from auspexai_tenant.manifest import (
     compute_package_digest,
 )
 from auspexai_tenant.package import build_package_archive
+from auspexai_tenant.raw_collector import RawContentCollector
 from auspexai_tenant.receipts import (
     QuorumAgreement,
     Receipt,
@@ -142,6 +143,7 @@ __all__ = [
     "Model",
     "Progress",
     "QuorumAgreement",
+    "RawContentCollector",
     "Receipt",
     "Reducer",
     "ReducerDecision",

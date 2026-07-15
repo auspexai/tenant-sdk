@@ -223,7 +223,11 @@ def test_run_ctrl_c_finalizes_completed_work_by_default(
         reduce=Counter(bucket=lambda r: "x"),
     )
     cfg = SimpleNamespace(
-        driver_path=None, source_path=None, available_profiles=[], active_profile=None
+        driver_path=None,
+        source_path=None,
+        available_profiles=[],
+        active_profile=None,
+        capture_raw=False,
     )
     monkeypatch.setattr(ec_mod, "load_experiment_config", lambda config_path, profile=None: cfg)
     monkeypatch.setattr(cli_mod, "_load_attr", lambda spec_str: lambda cfg: spec)
@@ -268,7 +272,11 @@ def test_run_ctrl_c_resumable_leaves_running(
         reduce=Counter(bucket=lambda r: "x"),
     )
     cfg = SimpleNamespace(
-        driver_path=None, source_path=None, available_profiles=[], active_profile=None
+        driver_path=None,
+        source_path=None,
+        available_profiles=[],
+        active_profile=None,
+        capture_raw=False,
     )
     monkeypatch.setattr(ec_mod, "load_experiment_config", lambda config_path, profile=None: cfg)
     monkeypatch.setattr(cli_mod, "_load_attr", lambda spec_str: lambda cfg: spec)

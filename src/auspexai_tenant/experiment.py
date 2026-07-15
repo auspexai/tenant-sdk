@@ -321,6 +321,38 @@ class Experiment:
         except Exception:
             pass
 
+    def collect_raw_content(self) -> dict[str, dict[str, Any]]:
+        """D20: fetch the run's buffered raw model outputs (R3-gated, live,
+        ephemeral). `GET /raw-content` returns only what is still in the
+        coordinator's in-memory transit buffer — raw NEVER rests there — so this is
+        polled DURING the run (see `raw_collector.RawContentCollector`). Returns
+        `{result_id: {"raw": text, "raw_signature": sig|None, "worker_pubkey":
+        pk|None}}`. Raises `CoordinatorError` on non-success (e.g. 403 when the
+        caller's research standing is below R3). Idempotent GET → safe to retry."""
+        url = f"{self._base}/api/v0/experiments/{self.experiment_id}/raw-content"
+
+        def _do() -> httpx.Response:
+            if self._client is None:
+                with httpx.Client(timeout=self._timeout) as c:
+                    return c.get(url, auth=self._auth)
+            return self._client.get(url, auth=self._auth)
+
+        resp = call_with_retry(_do)
+        if not resp.is_success:
+            raise CoordinatorError(resp.status_code, resp.text)
+        body = resp.json()
+        raw = body.get("raw") or {}
+        sigs = body.get("signatures") or {}
+        out: dict[str, dict[str, Any]] = {}
+        for result_id, text in raw.items():
+            sig = sigs.get(result_id) or {}
+            out[result_id] = {
+                "raw": text,
+                "raw_signature": sig.get("raw_signature"),
+                "worker_pubkey": sig.get("worker_pubkey"),
+            }
+        return out
+
     # ---- reads (poll = source of truth, design note §2) --------------------
 
     def progress(self) -> Progress:
