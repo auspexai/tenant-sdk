@@ -1828,6 +1828,141 @@ def benchmark() -> None:
     models, and configurations (see docs/analyzing_your_results.md)."""
 
 
+def _is_self_baseline_run(layout) -> bool:
+    """Whether this run was scored self-baseline (a saved benchmark_self.json, or a
+    self_baseline declaration recorded at launch)."""
+    if (layout.dir / "benchmark_self.json").exists():
+        return True
+    decl = layout.dir / "benchmark_reference.json"
+    if decl.exists():
+        try:
+            return json.loads(decl.read_text()).get("mode") == "self_baseline"
+        except (ValueError, OSError):
+            return False
+    return False
+
+
+def _self_baseline_k_and_calibrate(layout) -> tuple[int, bool]:
+    """(K, calibrate_envelope) for a self-baseline run — from the saved report's
+    reference block, else the launch declaration."""
+    for name in ("benchmark_self.json", "benchmark_reference.json"):
+        p = layout.dir / name
+        if not p.exists():
+            continue
+        try:
+            d = json.loads(p.read_text())
+        except (ValueError, OSError):
+            continue
+        block = d.get("reference") if name == "benchmark_self.json" else d
+        k = int((block or {}).get("baseline_rounds") or 0)
+        if k > 0:
+            return k, bool((block or {}).get("calibrate_envelope"))
+    return 0, False
+
+
+def _publish_self_baseline(client, key, coordinator, exp_id, label, layout, no_submit) -> None:
+    """Publish a SELF-baseline run as a single-anchor signed registry entry (§3.4).
+    Mirrors the cross-reference publish (score-if-needed → G6 authorization →
+    build_entry_self → courier submit), but there is only one bundle."""
+    from auspexai_tenant.benchmark import drift_benchmark_self
+    from auspexai_tenant.benchmark_entry import build_entry_self, verify_entry
+    from auspexai_tenant.evidence import verify_bundle
+
+    k, calibrate = _self_baseline_k_and_calibrate(layout)
+    if k <= 0:
+        click.echo(
+            "ERROR: no self-baseline window (K) for this run — nothing to publish.", err=True
+        )
+        sys.exit(1)
+    self_report = layout.dir / "benchmark_self.json"
+    record = None
+    if self_report.exists():
+        try:
+            record = json.loads(self_report.read_text())
+        except (ValueError, OSError):
+            record = None
+
+    click.echo(f"collecting + verifying the bundle ({exp_id}) …")
+    obs_bundle = _run(lambda: client.export(exp_id))
+    if not verify_bundle(obs_bundle).ok:
+        click.echo("ERROR: the bundle failed verification — refusing to sign.", err=True)
+        sys.exit(1)
+
+    if record is None:
+        # Historical / never-scored self run: score it now (bundle in hand).
+        from datetime import UTC, datetime
+
+        report = drift_benchmark_self(obs_bundle, k, calibrate_envelope=calibrate)
+        record = {
+            "schema": "auspexai-drift-benchmark-report/v0",
+            "computed_at": datetime.now(UTC).isoformat(),
+            "observation": {"experiment_id": exp_id, "label": label},
+            "reference": {
+                "mode": "self_baseline",
+                "baseline_rounds": k,
+                "calibrate_envelope": calibrate,
+            },
+            "report": report.to_dict(),
+        }
+        layout.dir.mkdir(parents=True, exist_ok=True)
+        self_report.write_text(json.dumps(record, indent=2))
+        click.echo(f"scored: self-drift peak {report.peak_eu} EU (report saved beside the run)")
+
+    # G6 authorization — a self run references itself (reference == the run).
+    authorization = None
+    rep = record.get("report") or {}
+    try:
+        from auspexai_tenant.experiment import Experiment
+
+        resp = Experiment(coordinator, key, exp_id)._post(
+            f"/api/v0/experiments/{exp_id}/actions/authorize-benchmark-publication",
+            json={
+                "reference_experiment_id": exp_id,
+                "peak_eu": rep.get("peak_eu"),
+                "breadth": rep.get("breadth"),
+                "byte_divergence_rate": rep.get("byte_divergence_rate"),
+            },
+        )
+        if resp.status_code == 200:
+            authorization = resp.json()["authorization"]
+            click.echo(
+                f"publication authorized (standing R{authorization.get('standing_at_issue')}, "
+                "audited coordinator-side)"
+            )
+        elif resp.status_code == 403:
+            detail = resp.json().get("detail", {}).get("error", {})
+            click.echo(f"ERROR: {detail.get('message', 'publication refused')}", err=True)
+            sys.exit(1)
+        else:
+            click.echo(
+                f"WARNING: authorization unavailable (HTTP {resp.status_code}) — "
+                "publishing without an authorization block.",
+                err=True,
+            )
+    except Exception as e:
+        click.echo(f"WARNING: authorization request failed ({e}) — continuing.", err=True)
+
+    entry = build_entry_self(
+        record=record,
+        observation_bundle=obs_bundle,
+        tenant_id=(obs_bundle.get("manifest") or {}).get("tenant_id"),
+        key=key,
+        authorization=authorization,
+    )
+    payload = verify_entry(entry)
+    assert payload is not None
+    out = layout.dir / "benchmark_entry_self.json"
+    out.write_text(json.dumps(entry, indent=2))
+    click.echo(
+        f"signed self-baseline entry: peak {payload['report']['peak_eu']} EU "
+        f"(K={k}{', self-calibrated envelope' if calibrate else ''})"
+    )
+    click.echo(f"written: {out}")
+    if no_submit:
+        return
+    _submit_entry_to_board(entry, out)
+
+
 @benchmark.command("publish")
 @click.argument("target")
 @click.option(
@@ -1879,6 +2014,13 @@ def benchmark_publish(
     except (ValueError, OSError):
         cfg_runs_dir = None
     layout = RunLayout(label, base=runs_base(cfg_runs_dir))
+
+    # Self-baseline publish (§3.4): a self entry has ONE anchor (its own baseline
+    # is the reference). Triggered by a saved benchmark_self.json or a self_baseline
+    # declaration — unless the caller forced a --reference (cross-model).
+    if reference_id is None and _is_self_baseline_run(layout):
+        _publish_self_baseline(client, key, coordinator, exp_id, label, layout, no_submit)
+        return
 
     # Resolve the reference: --reference > a single saved report > the
     # declaration recorded at launch.
@@ -2000,9 +2142,13 @@ def benchmark_publish(
     click.echo(f"written: {out}")
     if no_submit:
         return
-    # One-command publish: the entry is self-grounding, so submission is a
-    # dumb courier (a Worker opens the website PR; CI runs the grounded
-    # admission rule and merges only on green — machines admit, no curator).
+    _submit_entry_to_board(entry, out)
+
+
+def _submit_entry_to_board(entry: dict, out: Path) -> None:
+    """One-command publish: the entry is self-grounding, so submission is a dumb
+    courier (a Worker opens the website PR; CI runs the grounded admission rule and
+    merges only on green — machines admit, no curator)."""
     submit_url = os.environ.get(
         "AUSPEXAI_BOARD_SUBMIT_URL", "https://board.auspexai.network/submit"
     )

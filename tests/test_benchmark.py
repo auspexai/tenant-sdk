@@ -810,6 +810,154 @@ def test_grounded_verify_requires_coordinator_custody_binding():
     assert verify_entry_grounded(stolen, authorized_signers=(coord.pubkey_hex,)) is None
 
 
+def test_self_baseline_entry_is_single_anchor_and_grounds_on_observation_only():
+    # §3.4: a self-baseline entry has ONE experiment (its own baseline is the
+    # reference). It carries the run's OWN model/generation + K + calibrate in a
+    # self_baseline block, and grounds on the single observation custody.
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from auspexai_tenant.benchmark_entry import (
+        build_entry_self,
+        verify_entry,
+        verify_entry_grounded,
+    )
+
+    class _Key:
+        def __init__(self):
+            self._k = Ed25519PrivateKey.generate()
+            self.pubkey_hex = self._k.public_key().public_bytes_raw().hex()
+
+        def sign(self, d):
+            return self._k.sign(d)
+
+    coord, publisher = _Key(), _Key()
+
+    def bundle(mh, temp=None):
+        rec = f"root|{publisher.pubkey_hex}|2026-07-06T11:00:00+00:00|{mh}".encode()
+        manifest = {"models": [{"id": "gpt-oss-20b-mxfp4"}], "feature_schema": {}}
+        if temp:
+            manifest["inference_determinism"] = {"temperature": temp, "top_p": 0.9}
+        return {
+            "manifest_hash": mh,
+            "manifest": manifest,
+            "attestation": {"merkle_root": "r" * 64, "rekor_log_index": 1},
+            "transfer": {
+                "result_set_root": "root",
+                "collected_by_pubkey": publisher.pubkey_hex,
+                "collected_at": "2026-07-06T11:00:00+00:00",
+                "manifest_hash": mh,
+                "coordinator_pubkey_hex": coord.pubkey_hex,
+                "coordinator_signature": coord.sign(rec).hex(),
+            },
+        }
+
+    record = {
+        "computed_at": "t",
+        "observation": {"experiment_id": "exp-gptoss", "label": "gptoss"},
+        "reference": {"mode": "self_baseline", "baseline_rounds": 5, "calibrate_envelope": True},
+        "report": {
+            "peak_eu": 0.0,
+            "breadth": 0.0,
+            "byte_divergence_rate": 0.0,
+            "diverged_units_total": None,
+            "key_feature": "probe_id",
+            "probes": [],
+        },
+    }
+    entry = build_entry_self(
+        record=record,
+        observation_bundle=bundle("a" * 64, temp=0.8),
+        tenant_id="vigiles-lab",
+        key=publisher,
+    )
+    payload = verify_entry(entry)
+    assert payload["entry_kind"] == "self_baseline"
+    assert "reference" not in payload  # single anchor — no reference experiment
+    sb = payload["self_baseline"]
+    assert sb["model"] == "gpt-oss-20b-mxfp4"
+    assert sb["generation"].startswith("sampling(temp=0.8")
+    assert sb["baseline_rounds"] == 5 and sb["calibrate_envelope"] is True
+    # Grounds on the SINGLE observation custody (the both-sides loop must not
+    # demand a nonexistent reference side).
+    assert verify_entry_grounded(entry, authorized_signers=(coord.pubkey_hex,)) is not None
+    assert verify_entry_grounded(entry, authorized_signers=("ab" * 32,)) is None
+    # A thief re-signing the same custody fails (collected_by binds the publisher).
+    thief = _Key()
+    stolen = build_entry_self(
+        record=record,
+        observation_bundle=bundle("a" * 64, temp=0.8),
+        tenant_id="vigiles-lab",
+        key=thief,
+    )
+    assert verify_entry_grounded(stolen, authorized_signers=(coord.pubkey_hex,)) is None
+
+
+def test_publish_self_baseline_writes_a_single_anchor_entry(tmp_path, monkeypatch):
+    # §3.4: `benchmark publish` on a self-baseline run builds + writes a single-
+    # anchor entry (self_baseline block, own model, self-drift score), no submit.
+    import json as _json
+
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    import auspexai_tenant.cli as cli_mod
+    from auspexai_tenant.benchmark_entry import verify_entry
+    from auspexai_tenant.runs import RunLayout, runs_base
+
+    monkeypatch.setenv("AUSPEXAI_RUNS_DIR", str(tmp_path / "runs"))
+    layout = RunLayout("lab-z", base=runs_base(str(tmp_path / "runs")))
+    layout.dir.mkdir(parents=True)
+    (layout.dir / "benchmark_reference.json").write_text(
+        _json.dumps({"mode": "self_baseline", "baseline_rounds": 3, "calibrate_envelope": False})
+    )
+    assert cli_mod._is_self_baseline_run(layout) is True
+    assert cli_mod._self_baseline_k_and_calibrate(layout) == (3, False)
+
+    class _Key:
+        def __init__(self):
+            self._k = Ed25519PrivateKey.generate()
+            self.pubkey_hex = self._k.public_key().public_bytes_raw().hex()
+
+        def sign(self, d):
+            return self._k.sign(d)
+
+    publisher = _Key()
+    rows = [(r, "p-a", "h", 0.90, 20, [["x", 1]]) for r in range(3)]
+    rows += [(3, "p-a", "h2", 0.50, 20, [["x", 1]])]
+    bundle = _round_bundle(rows)
+    bundle["manifest_hash"] = "a" * 64
+    bundle["manifest"]["tenant_id"] = "vigiles-lab"
+    bundle["manifest"]["models"] = [{"id": "gpt-oss-20b-mxfp4"}]
+    bundle["attestation"] = {"merkle_root": "r" * 64, "rekor_log_index": 1}
+    bundle["transfer"] = {"result_set_root": "root", "collected_by_pubkey": publisher.pubkey_hex}
+
+    class _Client:
+        def export(self, e):
+            return bundle
+
+    class _Ok:
+        ok = True
+
+    class _Exp:  # authorization request fails fast → authorization None path
+        def __init__(self, *a, **k):
+            pass
+
+        def _post(self, *a, **k):
+            raise ConnectionError("no coordinator in the test")
+
+    monkeypatch.setattr("auspexai_tenant.evidence.verify_bundle", lambda b: _Ok())
+    monkeypatch.setattr("auspexai_tenant.experiment.Experiment", _Exp)
+    cli_mod._publish_self_baseline(
+        _Client(), publisher, "http://x", "exp-z", "lab-z", layout, no_submit=True
+    )
+    entry = _json.loads((layout.dir / "benchmark_entry_self.json").read_text())
+    payload = verify_entry(entry)
+    assert payload["entry_kind"] == "self_baseline"
+    assert "reference" not in payload
+    assert payload["self_baseline"]["model"] == "gpt-oss-20b-mxfp4"
+    assert payload["self_baseline"]["baseline_rounds"] == 3
+    assert payload["report"]["peak_eu"] > 1.0  # the r3 monitoring drift
+
+
 def test_error_code_parses_the_real_nested_envelope():
     # The 2026-07-04 resume-replay 409: the coordinator nests under "detail",
     # so the typed-conflict parse never matched and resume idempotency was

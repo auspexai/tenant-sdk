@@ -44,27 +44,32 @@ def _attestation_anchor(bundle: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def manifest_model(m: dict[str, Any]) -> str | None:
+    """The model id a signed manifest declares (the board's model identity)."""
+    models = m.get("models") or []
+    return f"{models[0].get('id')}" if models else None
+
+
+def manifest_generation(m: dict[str, Any]) -> str:
+    """The generation policy a signed manifest declares — "greedy" or a
+    "sampling(...)" descriptor (the board's det/sampling split)."""
+    d = m.get("inference_determinism")
+    if not d:
+        return "greedy"
+    t = d.get("temperature")
+    if not t:
+        return "greedy"
+    knobs = {k: d.get(k) for k in ("top_p", "top_k", "min_p") if d.get(k) is not None}
+    knob_s = "".join(f",{k}={v}" for k, v in sorted(knobs.items()))
+    return f"sampling(temp={t}{knob_s},seeded)"
+
+
 def derive_config_delta(obs: dict[str, Any], ref: dict[str, Any]) -> dict[str, Any]:
     """The declared differences between two signed manifests, on the dimensions
     the platform defines. Structured, never prose: the board renders chips from
     this, so the explanation of a score is a machine fact a verifier can
     recompute from the two manifests the entry anchors."""
-
-    def _model(m: dict[str, Any]) -> str | None:
-        models = m.get("models") or []
-        return f"{models[0].get('id')}" if models else None
-
-    def _generation(m: dict[str, Any]) -> str:
-        d = m.get("inference_determinism")
-        if not d:
-            return "greedy"
-        t = d.get("temperature")
-        if not t:
-            return "greedy"
-        knobs = {k: d.get(k) for k in ("top_p", "top_k", "min_p") if d.get(k) is not None}
-        knob_s = "".join(f",{k}={v}" for k, v in sorted(knobs.items()))
-        return f"sampling(temp={t}{knob_s},seeded)"
-
+    _model, _generation = manifest_model, manifest_generation
     delta: dict[str, Any] = {"changed": {}, "unchanged": []}
     dims = {
         "model": _model,
@@ -137,25 +142,82 @@ def build_entry(
             "attestation": _attestation_anchor(reference_bundle),
             "custody": reference_bundle.get("transfer"),
         },
-        "report": {
-            "peak_eu": rep.get("peak_eu"),
-            "breadth": rep.get("breadth"),
-            "byte_divergence_rate": rep.get("byte_divergence_rate"),
-            "diverged_units_total": rep.get("diverged_units_total"),
-            "key_feature": rep.get("key_feature"),
-            "computed_at": record.get("computed_at"),
-            "probes": [
-                {
-                    "key": p.get("key"),
-                    "peak_eu": p.get("peak_eu"),
-                    "beyond_envelope": p.get("beyond_envelope"),
-                    "byte_divergence_rate": p.get("byte_divergence_rate"),
-                    "observations": p.get("observations"),
-                    "reference_observations": p.get("reference_observations"),
-                }
-                for p in rep.get("probes") or []
-            ],
+        "report": _entry_report(rep, record.get("computed_at")),
+    }
+    body = _canonical_payload_bytes(payload)
+    return {
+        "schema": ENTRY_SCHEMA,
+        "payload_b64": b64encode(body).decode(),
+        "publisher_pubkey_hex": key.pubkey_hex,
+        "signature_b64": b64encode(key.sign(body)).decode(),
+    }
+
+
+def _entry_report(rep: dict[str, Any], computed_at: Any) -> dict[str, Any]:
+    """The report block an entry carries (shared by cross-reference + self entries)."""
+    return {
+        "peak_eu": rep.get("peak_eu"),
+        "breadth": rep.get("breadth"),
+        "byte_divergence_rate": rep.get("byte_divergence_rate"),
+        "diverged_units_total": rep.get("diverged_units_total"),
+        "key_feature": rep.get("key_feature"),
+        "computed_at": computed_at,
+        "probes": [
+            {
+                "key": p.get("key"),
+                "peak_eu": p.get("peak_eu"),
+                "beyond_envelope": p.get("beyond_envelope"),
+                "byte_divergence_rate": p.get("byte_divergence_rate"),
+                "observations": p.get("observations"),
+                "reference_observations": p.get("reference_observations"),
+            }
+            for p in rep.get("probes") or []
+        ],
+    }
+
+
+def build_entry_self(
+    *,
+    record: dict[str, Any],
+    observation_bundle: dict[str, Any],
+    tenant_id: str | None,
+    key,  # TenantKey
+    authorization: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """A signed registry entry for a SELF-baseline run — a SINGLE-anchor claim
+    (self_baseline_drift_design.md §3.4). The score compares the run's own
+    monitoring rounds to its own first-K baseline rounds, so there is NO reference
+    experiment: model + generation come from THIS run's signed manifest, and the
+    `self_baseline` block records K + calibrate_envelope. The board discriminates
+    on `entry_kind == "self_baseline"` (absent = a legacy cross-reference entry).
+    The caller has already custody-verified the one bundle."""
+    rep = record.get("report") or {}
+    ref = record.get("reference") or {}
+    manifest = observation_bundle.get("manifest") or {}
+    payload: dict[str, Any] = {
+        "schema": ENTRY_SCHEMA,
+        "entry_kind": "self_baseline",
+        "published_at": datetime.now(UTC).isoformat(),
+        "publisher_pubkey_hex": key.pubkey_hex,
+        "tenant_id": tenant_id,
+        "publication_authorization": authorization,
+        # The self-baseline descriptor the board renders model/condition from (in
+        # place of a cross-experiment config_delta, which is empty for one run):
+        # the run's OWN declared model + generation, plus the split K and whether
+        # the envelope was self-calibrated (§3.2).
+        "self_baseline": {
+            "model": manifest_model(manifest),
+            "generation": manifest_generation(manifest),
+            "baseline_rounds": ref.get("baseline_rounds"),
+            "calibrate_envelope": bool(ref.get("calibrate_envelope")),
         },
+        "observation": {
+            **(record.get("observation") or {}),
+            "manifest_hash": observation_bundle.get("manifest_hash"),
+            "attestation": _attestation_anchor(observation_bundle),
+            "custody": observation_bundle.get("transfer"),
+        },
+        "report": _entry_report(rep, record.get("computed_at")),
     }
     body = _canonical_payload_bytes(payload)
     return {
@@ -202,7 +264,18 @@ def verify_entry_grounded(
     if payload is None:
         return None
     signers = {s.lower() for s in (authorized_signers or KNOWN_PUBLIC_SIGNERS)}
-    for side in ("observation", "reference"):
+    # A self-baseline entry (§3.4) has ONE experiment — its own baseline is the
+    # reference — so only the observation custody is grounded; a cross-reference
+    # entry grounds both sides.
+    sides = (
+        ("observation",)
+        if payload.get("entry_kind") == "self_baseline"
+        else (
+            "observation",
+            "reference",
+        )
+    )
+    for side in sides:
         block = payload.get(side) or {}
         t = block.get("custody")
         if not isinstance(t, dict):
