@@ -24,7 +24,26 @@ SensitiveContentFlag = Literal[
     "dual_use",
     "red_team",
     "harmful_output_generation",
+    # D20 (ratified 2026-07-06): raw model-output capture. Set together with the
+    # `capture` member; its presence is what fails `routine_no_sensitive_flags`
+    # coordinator-side, so a capture run does NOT auto-approve → per-experiment
+    # (R3) review. Kept an optional member of the same v0.6 line the SDK writer
+    # already emits (worker/coordinator read `capture`/this flag by key).
+    "raw_content_capture",
 ]
+
+
+class Capture(BaseModel):
+    """D20 raw-content capture opt-in (ratified 2026-07-06). `raw=true` makes the
+    executor emit the reserved `raw_response`; the coordinator parks it in an
+    ephemeral R3 transit buffer (never at rest) and the researcher's driver
+    harvests it live (`raw_collector.RawContentCollector`). Declaring it also
+    requires `raw_content_capture` in `sensitive_content_flags` (enforced below),
+    so raw capture is always review-gated, never auto-approved."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    raw: bool = False
 
 
 class Model(BaseModel):
@@ -531,6 +550,27 @@ class Manifest(BaseModel):
     # v0_6 / D17 — how this experiment was configured (SDK-stamped at build;
     # descriptive, not enforced — see the model's docstring).
     config_provenance: ConfigProvenance | None = None
+    # v0_6 / D20 — raw-content capture opt-in (ratified 2026-07-06). Optional;
+    # PRESENCE (capture.raw=true) makes the executor emit raw_response, requires
+    # the raw_content_capture sensitive flag (→ per-experiment review), and enables
+    # live R3 collection. See Capture + raw_collector.RawContentCollector.
+    capture: Capture | None = None
+
+    @model_validator(mode="after")
+    def _capture_requires_review_flag(self) -> Manifest:
+        """D20 coherence gate (mirrors §3c: enforced here AND coordinator-side).
+        Declaring raw-content capture MUST carry the `raw_content_capture`
+        sensitive flag — that flag is what fails `routine_no_sensitive_flags`, so
+        without it a run could exfiltrate raw model output AND auto-approve. The
+        SDK writer sets both together; this refuses a hand-built manifest that
+        declares capture without the flag (a review bypass)."""
+        if self.capture is not None and self.capture.raw:
+            if "raw_content_capture" not in self.sensitive_content_flags:
+                raise ValueError(
+                    "capture.raw requires 'raw_content_capture' in "
+                    "sensitive_content_flags (raw capture must never auto-approve)"
+                )
+        return self
 
     @model_validator(mode="after")
     def _sampling_coherent_with_reducer(self) -> Manifest:
@@ -599,7 +639,15 @@ class Manifest(BaseModel):
 
     @model_validator(mode="after")
     def _sensitive_requires_attestation(self) -> Manifest:
-        if self.sensitive_content_flags and not self.approver_attestations:
+        # §5.12/§6.5: harmful-content flags need an Approver-pool attestation. D20's
+        # `raw_content_capture` is a DATA-CUSTODY declaration, NOT harmful content —
+        # per the D20 design (§1: "declared, not separately reviewed; R3 + audit, no
+        # new ethics review") it routes to a per-experiment review via the
+        # coordinator's `routine_no_sensitive_flags` gate and is bounded by R3 +
+        # custody transfer, not an approver attestation. So it alone does not trigger
+        # this requirement (the coordinator likewise requires no approver for it).
+        needs_approver = set(self.sensitive_content_flags) - {"raw_content_capture"}
+        if needs_approver and not self.approver_attestations:
             raise ValueError(
                 "approver_attestations is required when sensitive_content_flags is non-empty "
                 "(Principles §5.12 research ethics)"

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://auspexai.network/schemas/manifest/v0.6",
   "title": "AuspexAI Tenant Manifest v0.6",
-  "description": "Published manifest schema for AuspexAI tenant experiments, v0.6. Mirrors the normative CDDL in cddl/manifest_v0_6.cddl. v0.6 is a superset of v0.5 adding TWO members (process_only_reducer_and_provenance_v0_6_design.md, RATIFIED 2026-07-03): (1) the builtin_process_only OBSERVE-ONLY reducer — no cross-replica agreement is ever claimed; every replica is an independent observation earning integrity basis process_only at any replica count (the declarable §3c non-agreement collection mode; opens seeded-sampling and distributional designs at any trust tier and any replication); (2) the optional config_provenance block — SDK-stamped at build (active profile, sha256 of the RESOLVED post-profile-merge config, git commit + dirty bit; descriptive, never enforced — its readers are the D16.2 verify chain/bundle and the dashboard). Enforcement keys on presence; v0.1-v0.5 manifests stay valid forever (no forced migration; re-verify-forever).",
+  "description": "Published manifest schema for AuspexAI tenant experiments, v0.6. Mirrors the normative CDDL in cddl/manifest_v0_6.cddl. v0.6 is a superset of v0.5 adding TWO members (process_only_reducer_and_provenance_v0_6_design.md, RATIFIED 2026-07-03): (1) the builtin_process_only OBSERVE-ONLY reducer \u2014 no cross-replica agreement is ever claimed; every replica is an independent observation earning integrity basis process_only at any replica count (the declarable \u00a73c non-agreement collection mode; opens seeded-sampling and distributional designs at any trust tier and any replication); (2) the optional config_provenance block \u2014 SDK-stamped at build (active profile, sha256 of the RESOLVED post-profile-merge config, git commit + dirty bit; descriptive, never enforced \u2014 its readers are the D16.2 verify chain/bundle and the dashboard). Enforcement keys on presence; v0.1-v0.5 manifests stay valid forever (no forced migration; re-verify-forever).",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -42,7 +42,7 @@
       "type": "string",
       "minLength": 50,
       "maxLength": 2000,
-      "description": "One-paragraph volunteer-readable research goal (Principles §5.14)."
+      "description": "One-paragraph volunteer-readable research goal (Principles \u00a75.14)."
     },
     "research_class": {
       "type": "string",
@@ -55,7 +55,7 @@
         "prompt_sensitivity",
         "other"
       ],
-      "description": "§9 #48: declared research class for class-by-tier auto-approval. Optional; omitted ⇒ human review."
+      "description": "\u00a79 #48: declared research class for class-by-tier auto-approval. Optional; omitted \u21d2 human review."
     },
     "models": {
       "type": "array",
@@ -89,7 +89,7 @@
           "expected_gguf_sha256": {
             "type": "string",
             "pattern": "^[a-f0-9]{64}$",
-            "description": "v0.2 / M3 (#13b): the expected sha256 of the served GGUF weights. When set, the coordinator REJECTS a result whose worker-reported served digest differs — the declared model provably ran (§11 amendment 2 / §9 #48 cross-model performance unlock). Omit ⇒ behavioral-only (status quo)."
+            "description": "v0.2 / M3 (#13b): the expected sha256 of the served GGUF weights. When set, the coordinator REJECTS a result whose worker-reported served digest differs \u2014 the declared model provably ran (\u00a711 amendment 2 / \u00a79 #48 cross-model performance unlock). Omit \u21d2 behavioral-only (status quo)."
           }
         }
       }
@@ -98,7 +98,7 @@
       "type": "string",
       "minLength": 10,
       "maxLength": 1000,
-      "description": "High-level description only, not the literal prompts (Principles §5.14)."
+      "description": "High-level description only, not the literal prompts (Principles \u00a75.14)."
     },
     "sensitive_content_flags": {
       "type": "array",
@@ -107,11 +107,12 @@
         "enum": [
           "dual_use",
           "red_team",
-          "harmful_output_generation"
+          "harmful_output_generation",
+          "raw_content_capture"
         ]
       },
       "uniqueItems": true,
-      "description": "Per Principles §5.12 research ethics. If any flag is set, approver_attestations is required."
+      "description": "Per Principles \u00a75.12 research ethics. If any flag is set, approver_attestations is required."
     },
     "approver_attestations": {
       "type": "array",
@@ -298,7 +299,7 @@
         },
         "serving_version_pin": {
           "type": "string",
-          "description": "e.g. 'ollama/0.17.7' — the worker must serve a matching version or refuse."
+          "description": "e.g. 'ollama/0.17.7' \u2014 the worker must serve a matching version or refuse."
         },
         "hardware_class": {
           "type": "string",
@@ -397,7 +398,7 @@
           "items": {
             "type": "integer"
           },
-          "description": "[] scalar · [N] vector · [R,C] matrix."
+          "description": "[] scalar \u00b7 [N] vector \u00b7 [R,C] matrix."
         },
         "dtype": {
           "type": "string",
@@ -407,7 +408,7 @@
     },
     "feature_schema": {
       "type": "object",
-      "description": "v0.3 / D16.1: the self-describing feature schema, keyed by the dotted result-payload path the executor emits (e.g. 'lexical.type_token_ratio'; load_verified prefixes the column with 'output.'). Each value declares the feature's meaning, §7-safe type + bounds, what a change implies, role (feature authority), and how replicas are compared (the C7 tolerance envelope). There is NO free-text kind — a string is a closed `categorical` or a `hash` (the §7 no-raw-text guarantee). The per-kind required-bounds rules are enforced by the SDK model + the coordinator; this schema mirrors the structure.",
+      "description": "v0.3 / D16.1: the self-describing feature schema, keyed by the dotted result-payload path the executor emits (e.g. 'lexical.type_token_ratio'; load_verified prefixes the column with 'output.'). Each value declares the feature's meaning, \u00a77-safe type + bounds, what a change implies, role (feature authority), and how replicas are compared (the C7 tolerance envelope). There is NO free-text kind \u2014 a string is a closed `categorical` or a `hash` (the \u00a77 no-raw-text guarantee). The per-kind required-bounds rules are enforced by the SDK model + the coordinator; this schema mirrors the structure.",
       "additionalProperties": {
         "type": "object",
         "additionalProperties": false,
@@ -557,7 +558,7 @@
     },
     "pre_registration": {
       "type": "object",
-      "description": "v0.4 / D16.2: the pre-registered design — hypothesis, analysis, and decision rule declared BEFORE data exists. `features` NAMES declared feature_schema paths; the pre-registered comparison envelope IS each feature's `comparison` in this same signed manifest (referenced, never duplicated). §7-safe: describes the design over declared features, never raw output. A post-hoc analysis change is a signed, append-only deviation record, never an edit.",
+      "description": "v0.4 / D16.2: the pre-registered design \u2014 hypothesis, analysis, and decision rule declared BEFORE data exists. `features` NAMES declared feature_schema paths; the pre-registered comparison envelope IS each feature's `comparison` in this same signed manifest (referenced, never duplicated). \u00a77-safe: describes the design over declared features, never raw output. A post-hoc analysis change is a signed, append-only deviation record, never an edit.",
       "additionalProperties": false,
       "required": [
         "hypothesis",
@@ -633,7 +634,7 @@
     "config_provenance": {
       "type": "object",
       "additionalProperties": false,
-      "description": "D17: HOW this experiment was configured — SDK-stamped at experiment build, never hand-written. Descriptive, not enforced.",
+      "description": "D17: HOW this experiment was configured \u2014 SDK-stamped at experiment build, never hand-written. Descriptive, not enforced.",
       "properties": {
         "profile": {
           "type": "string",
@@ -656,6 +657,16 @@
       "required": [
         "resolved_config_sha256"
       ]
+    },
+    "capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "D20 raw-content capture opt-in (ratified 2026-07-06). Optional; capture.raw=true makes the executor emit raw_response, requires 'raw_content_capture' in sensitive_content_flags (\u2192 per-experiment review), and enables live R3 collection.",
+      "properties": {
+        "raw": {
+          "type": "boolean"
+        }
+      }
     }
   },
   "allOf": [

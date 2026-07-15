@@ -11,6 +11,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import ClassVar
 
+import pytest
+
 from auspexai_tenant.benchmark import (
     DriftBenchmark,
     drift_benchmark,
@@ -1085,6 +1087,33 @@ def test_capture_raw_declaration_and_manifest(tmp_path):
     on.write_text(base + "[capture]\nraw = true\n")
     cfg = load_experiment_config(on)
     assert cfg.capture_raw is True
-    m = manifest_dict_from_config(cfg, package_sha256="a" * 64, label="x")
+    m = manifest_dict_from_config(cfg, package_sha256="a" * 64, label="capture-x")
     assert m["capture"] == {"raw": True}
     assert "raw_content_capture" in m["sensitive_content_flags"]
+
+    # The gap this closes: a capture manifest must PASS Manifest.model_validate —
+    # `experiment build`/`submit` both validate through it, and the writer's
+    # `capture` + `raw_content_capture` members were never taught to the model, so
+    # every capture build 500'd (extra_forbidden / literal_error). Crucially,
+    # raw_content_capture must NOT trip the §5.12 approver-attestation requirement
+    # (D20: declared, not separately reviewed) — no approver_attestations here.
+    from auspexai_tenant.manifest import Manifest
+
+    assert "approver_attestations" not in m
+    validated = Manifest.model_validate(m)
+    assert validated.capture is not None and validated.capture.raw is True
+
+    # But a HARMFUL-content flag still requires an approver attestation.
+    harmful = {**m, "sensitive_content_flags": [*m["sensitive_content_flags"], "dual_use"]}
+    with pytest.raises(ValueError, match="approver_attestations is required"):
+        Manifest.model_validate(harmful)
+
+    # D20 coherence: capture WITHOUT the review flag is a review-bypass → refused.
+    bad = {
+        **m,
+        "sensitive_content_flags": [
+            f for f in m["sensitive_content_flags"] if f != "raw_content_capture"
+        ],
+    }
+    with pytest.raises(ValueError, match="raw_content_capture"):
+        Manifest.model_validate(bad)
