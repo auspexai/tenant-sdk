@@ -80,31 +80,82 @@ class ExperimentConfig:
         return bool(c.get("raw")) if isinstance(c, dict) else False
 
     @property
+    def benchmark_mode(self) -> str:
+        """`[benchmark].mode` — how this run's Drift Benchmark chooses its
+        reference. "fixed_reference" (default): score against another experiment's
+        signed baseline (`reference`). "self_baseline": score this run's
+        monitoring rounds against its OWN first-K baseline rounds — drift from the
+        model's own normal, not distance to an anchor model
+        (self_baseline_drift_design.md §3.1). `reference = "self"` is a
+        convenience alias for `mode = "self_baseline"`."""
+        b = self.raw.get("benchmark")
+        if not isinstance(b, dict):
+            return "fixed_reference"
+        m = b.get("mode")
+        if m is None:
+            return (
+                "self_baseline"
+                if str(b.get("reference") or "").strip() == "self"
+                else "fixed_reference"
+            )
+        if m not in ("fixed_reference", "self_baseline"):
+            raise ValueError(
+                f"[benchmark].mode must be 'fixed_reference' or 'self_baseline', got {m!r}"
+            )
+        return m
+
+    @property
     def benchmark_reference(self) -> str | None:
-        """`[benchmark].reference` — the experiment this run's Drift Benchmark
-        scores against (its signed manifest defines the envelope). TENANT-GENERIC
-        declaration, platform-fixed semantics (the feature_schema pattern):
-        tenants declare WHAT to score against; the envelope-units standard is
-        never per-tenant. Declared up front = the pre-registration posture (the
-        comparison is chosen before the data exists); the launch flow records it
-        beside the run so the dashboard materializes the score automatically.
-        Mode "fixed_reference" is the only mode today; new practices (e.g. a
-        rolling previous-run reference) are additive declarative modes needing
-        their own design pass — never tenant code."""
+        """`[benchmark].reference` — for fixed_reference mode, the experiment this
+        run's Drift Benchmark scores against (its signed manifest defines the
+        envelope). TENANT-GENERIC declaration, platform-fixed semantics (the
+        feature_schema pattern): tenants declare WHAT to score against; the
+        envelope-units standard is never per-tenant. Declared up front = the
+        pre-registration posture (the comparison is chosen before the data
+        exists); the launch flow records it beside the run so the dashboard
+        materializes the score automatically. None in self_baseline mode (the
+        run's own baseline is the reference — see `benchmark_baseline_rounds`)."""
         b = self.raw.get("benchmark")
         if not isinstance(b, dict):
             return None
-        unknown = set(b) - {"reference"}
+        unknown = set(b) - {"reference", "mode"}
         if unknown:
             raise ValueError(
-                f"[benchmark] has unknown key(s) {sorted(unknown)} — only 'reference' is defined"
+                f"[benchmark] has unknown key(s) {sorted(unknown)} — "
+                "only 'reference' and 'mode' are defined"
             )
+        if self.benchmark_mode == "self_baseline":
+            return None  # the reference is this run's own baseline rounds
         ref = b.get("reference")
+        if ref is None:
+            return None
         if not isinstance(ref, str):
             raise ValueError("[benchmark].reference must be a string")
+        r = ref.strip()
         # "" is the explicit opt-out — how a profile (e.g. the calibration
         # baseline itself) switches OFF a top-level declaration it inherits.
-        return ref.strip() or None
+        # "self" is the self_baseline alias (handled by benchmark_mode) → no ext ref.
+        return None if r == "self" else (r or None)
+
+    @property
+    def benchmark_baseline_rounds(self) -> int:
+        """The self-baseline window K the scorer resolves the reference from — the
+        SAME `[driver].baseline_rounds` the driver calibrates over, clamped to
+        max_rounds like the driver does. 0 when unset. Recorded in the benchmark
+        declaration at launch (plaintext, pre-data); the value is hash-attested in
+        the signed manifest via config_provenance.resolved_config_sha256."""
+        v = self.driver.get("baseline_rounds")
+        try:
+            k = max(0, int(v)) if v is not None else 0
+        except (TypeError, ValueError):
+            return 0
+        mx = self.driver.get("max_rounds")
+        try:
+            if mx is not None:
+                k = min(k, max(0, int(mx)))
+        except (TypeError, ValueError):
+            pass
+        return k
 
     @property
     def key_path(self) -> str | None:

@@ -885,38 +885,61 @@ def _record_benchmark_declaration(cfg, experiment_id: str, label: str) -> None:
     asking the researcher to choose a comparison after the fact. Best-effort:
     a write failure never fails the launch."""
     try:
+        mode = cfg.benchmark_mode
         ref = cfg.benchmark_reference
     except ValueError as e:
         click.echo(f"WARNING: [benchmark] declaration ignored: {e}", err=True)
         return
-    if not ref:
-        return
-    if ref == experiment_id:
-        click.echo("WARNING: [benchmark].reference is this run itself — ignored.", err=True)
-        return
-    try:
-        from datetime import UTC, datetime
 
+    from datetime import UTC, datetime
+
+    source = "experiment_config" + (f":profiles.{cfg.active_profile}" if cfg.active_profile else "")
+    if mode == "self_baseline":
+        # The reference is THIS run's own first-K baseline rounds — no external
+        # experiment. K (= [driver].baseline_rounds, hash-attested via
+        # config_provenance) is recorded so the auto-score can split the timeline.
+        k = cfg.benchmark_baseline_rounds
+        if k <= 0:
+            click.echo(
+                "WARNING: [benchmark] mode is self_baseline but [driver].baseline_rounds is 0 "
+                "— there is no baseline to self-reference; declaration skipped.",
+                err=True,
+            )
+            return
+        decl = {
+            "schema": "auspexai-benchmark-declaration/v0",
+            "mode": "self_baseline",
+            "experiment_id": experiment_id,
+            "label": label,
+            "baseline_rounds": k,
+            "declared_at": datetime.now(UTC).isoformat(),
+            "source": source,
+        }
+        msg = f"benchmark declared: self-baseline over the first {k} round(s) (recorded beside the run)"
+    else:
+        if not ref:
+            return
+        if ref == experiment_id:
+            click.echo("WARNING: [benchmark].reference is this run itself — ignored.", err=True)
+            return
+        decl = {
+            "schema": "auspexai-benchmark-declaration/v0",
+            "mode": "fixed_reference",
+            "experiment_id": experiment_id,
+            "label": label,
+            "reference_experiment_id": ref,
+            "declared_at": datetime.now(UTC).isoformat(),
+            "source": source,
+        }
+        msg = f"benchmark declared: will score against {ref} (recorded beside the run)"
+
+    try:
         from auspexai_tenant.runs import runs_base
 
         layout = RunLayout(label, base=runs_base(cfg.runs_dir))
         layout.dir.mkdir(parents=True, exist_ok=True)
-        (layout.dir / "benchmark_reference.json").write_text(
-            json.dumps(
-                {
-                    "schema": "auspexai-benchmark-declaration/v0",
-                    "mode": "fixed_reference",
-                    "experiment_id": experiment_id,
-                    "label": label,
-                    "reference_experiment_id": ref,
-                    "declared_at": datetime.now(UTC).isoformat(),
-                    "source": "experiment_config"
-                    + (f":profiles.{cfg.active_profile}" if cfg.active_profile else ""),
-                },
-                indent=2,
-            )
-        )
-        click.echo(f"benchmark declared: will score against {ref} (recorded beside the run)")
+        (layout.dir / "benchmark_reference.json").write_text(json.dumps(decl, indent=2))
+        click.echo(msg)
     except (OSError, ValueError) as e:
         click.echo(f"WARNING: could not record the benchmark declaration: {e}", err=True)
 
@@ -941,10 +964,58 @@ def _auto_benchmark(client, label: str, runs_dir: str | None = None) -> None:
         return
     try:
         decl = json.loads(decl_path.read_text())
-        ref = str(decl["reference_experiment_id"])
+        mode = str(decl.get("mode") or "fixed_reference")
         exp_id = str(decl.get("experiment_id") or "")
-    except (OSError, ValueError, KeyError):
+    except (OSError, ValueError):
         click.echo("WARNING: unreadable benchmark declaration — skipping the auto-score.", err=True)
+        return
+
+    if mode == "self_baseline":
+        # Self-baseline: one bundle, split at K — no external reference to export.
+        k = int(decl.get("baseline_rounds") or 0)
+        out_path = layout.dir / "benchmark_self.json"
+        if out_path.exists() or k <= 0:
+            return  # already scored (resumed run) or nothing to self-reference
+        click.echo(f"benchmark: scoring self-baseline (first {k} round(s)) …")
+        try:
+            from datetime import UTC, datetime
+
+            from auspexai_tenant.benchmark import drift_benchmark_self
+            from auspexai_tenant.evidence import verify_bundle
+
+            bundle = client.export(exp_id)
+            if not verify_bundle(bundle).ok:
+                click.echo(
+                    "WARNING: the bundle failed verification — benchmark skipped "
+                    "(only custody-verified evidence is scored).",
+                    err=True,
+                )
+                return
+            report = drift_benchmark_self(bundle, k)
+            record = {
+                "schema": "auspexai-drift-benchmark-report/v0",
+                "computed_at": datetime.now(UTC).isoformat(),
+                "observation": {"experiment_id": exp_id, "label": label},
+                "reference": {"mode": "self_baseline", "baseline_rounds": k},
+                "report": report.to_dict(),
+            }
+            layout.dir.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(json.dumps(record, indent=2))
+            peak = f"{report.peak_eu:.2f} EU" if report.peak_eu is not None else "n/a"
+            breadth = f"{report.breadth:.0%}" if report.breadth is not None else "n/a"
+            click.echo(f"benchmark: self-drift peak {peak} · breadth {breadth} · saved {out_path}")
+        except (CoordinatorError, httpx.RequestError, OSError, ValueError) as e:
+            click.echo(
+                f"WARNING: could not auto-score ({e}); the dashboard scores it on first view, "
+                "or: auspexai-tenant benchmark self",
+                err=True,
+            )
+        return
+
+    try:
+        ref = str(decl["reference_experiment_id"])
+    except KeyError:
+        click.echo("WARNING: benchmark declaration missing a reference — skipping.", err=True)
         return
     out_path = layout.dir / f"benchmark_vs_{ref}.json"
     if out_path.exists():
@@ -2049,6 +2120,76 @@ def benchmark_drift(
             subtitle=None,
         )
         click.echo(f"plot: {plot_path}  (reference: {ref_id})")
+
+
+@benchmark.command("self")
+@click.argument("bundle", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "--baseline-rounds",
+    "baseline_rounds",
+    type=int,
+    required=True,
+    help="K — the number of leading rounds that establish this model's own "
+    "baseline (= [driver].baseline_rounds; hash-attested via config_provenance).",
+)
+@click.option(
+    "--key",
+    "key_feature",
+    default="probe_id",
+    show_default=True,
+    help="The dotted feature path observations are joined on (a role=key feature).",
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit the full report as JSON.")
+@click.option(
+    "--include-diverged",
+    is_flag=True,
+    help="Also score diverged/outlier payloads (forensics — out of the scalar by default).",
+)
+@click.option(
+    "--no-verify",
+    is_flag=True,
+    help="Skip verify_bundle on the input (offline scoring of unverified data).",
+)
+def benchmark_self(
+    bundle: Path,
+    baseline_rounds: int,
+    key_feature: str,
+    as_json: bool,
+    include_diverged: bool,
+    no_verify: bool,
+) -> None:
+    """Score a run's drift against ITS OWN baseline — self-baseline mode.
+
+    One exported bundle; its first --baseline-rounds (K) rounds establish the
+    model's own normal, and the remaining (monitoring) rounds are scored against
+    them in envelope units. This measures drift from the model's OWN behavior
+    over the run, not distance to a fixed anchor model
+    (self_baseline_drift_design.md §3.1). The round of each observation is read
+    from its unit_id (`…-r<round>`); the envelope is the run's own signed
+    manifest. A deterministic run reads 0 EU by construction."""
+    from auspexai_tenant.benchmark import (
+        _load_bundle_file,
+        drift_benchmark_self,
+        format_report,
+    )
+    from auspexai_tenant.evidence import verify_bundle
+
+    data = _load_bundle_file(str(bundle))
+    if not no_verify and not verify_bundle(data).ok:
+        click.echo(
+            "ERROR: bundle failed verification — score it anyway with --no-verify "
+            "if you understand what that means.",
+            err=True,
+        )
+        sys.exit(1)
+    try:
+        report = drift_benchmark_self(
+            data, baseline_rounds, key_feature=key_feature, include_diverged=include_diverged
+        )
+    except ValueError as e:
+        click.echo(f"ERROR: {e}", err=True)
+        sys.exit(1)
+    click.echo(json.dumps(report.to_dict(), indent=2) if as_json else format_report(report))
 
 
 # ----------------------------------------------------------------------------

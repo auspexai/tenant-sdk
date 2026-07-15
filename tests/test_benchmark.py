@@ -396,6 +396,200 @@ def test_additional_observation_rows_score_by_default_diverged_opt_in():
     assert (calm.peak_eu or 0) < (wild.peak_eu or 0)
 
 
+# ── self-baseline scorer (a run scores against its OWN early rounds) ──────────
+
+
+def _round_bundle(rows, schema=SCHEMA, *, basis=None, prefix="o10gs"):
+    """rows: (round, probe, sha, ttr, tokens, top). basis=None → consensus_results;
+    basis='observation' → additional_results (the process_only drift-study path).
+    unit_ids mimic the driver's <prefix>-<probe_id>-r<round> stamp."""
+    results = [
+        {
+            "unit_id": f"{prefix}-{probe}-r{rnd}",
+            "payload": _obs(probe, sha, ttr, tokens, top),
+            **({"integrity_basis": basis} if basis else {}),
+        }
+        for (rnd, probe, sha, ttr, tokens, top) in rows
+    ]
+    key = "additional_results" if basis else "consensus_results"
+    return {"manifest": {"feature_schema": schema}, key: results}
+
+
+def test_round_of_unit_parses_the_trailing_round():
+    from auspexai_tenant.benchmark import round_of_unit
+
+    assert round_of_unit("o10dgs-p-greeting-r7") == 7  # hyphenated probe + digit-bearing prefix
+    assert round_of_unit("cal-p-format-json-r12") == 12
+    assert round_of_unit("u0") is None  # a foreign/hand-authored unit id
+    assert round_of_unit(None) is None
+
+
+def test_self_baseline_splits_at_the_k_boundary():
+    from auspexai_tenant.benchmark import observations_with_round_from_bundle, split_self_baseline
+
+    b = _round_bundle([(r, "p-a", "h", 0.9, 20, [["x", 1]]) for r in range(5)])
+    rows, _ = observations_with_round_from_bundle(b)
+    baseline, monitoring, stats = split_self_baseline(rows, 3)
+    assert stats == {
+        "baseline_rounds": 3,
+        "baseline_rows": 3,  # rounds 0,1,2
+        "monitoring_rows": 2,  # rounds 3,4
+        "unplaced_rows": 0,
+    }
+    assert len(baseline) == 3 and len(monitoring) == 2
+
+
+def test_self_baseline_deterministic_run_is_zero_self_drift():
+    from auspexai_tenant.benchmark import drift_benchmark_self
+
+    # Identical output every round (a greedy model): monitoring == baseline →
+    # 0 EU, 0% breadth. This is the prototype's gpt-oss greedy = 0.00x result.
+    b = _round_bundle([(r, "p-a", "h", 0.90, 20, [["x", 1]]) for r in range(6)])
+    r = drift_benchmark_self(b, 3)
+    assert r.peak_eu == 0.0
+    assert r.breadth == 0.0
+    assert any("self-baseline: reference = this run's first 3" in n for n in r.notes)
+
+
+def test_self_baseline_flags_drift_from_its_own_baseline():
+    from auspexai_tenant.benchmark import drift_benchmark_self
+
+    # Baseline TTR 0.90 (rounds 0..2); a monitoring round moves it to 0.50 —
+    # beyond the model's own 0.02-rel envelope. Drift from ITS OWN normal.
+    rows = [(r, "p-a", "h", 0.90, 20, [["x", 1]]) for r in range(3)]
+    rows += [(r, "p-a", "h2", 0.50, 20, [["x", 1]]) for r in (3, 4)]
+    r = drift_benchmark_self(_round_bundle(rows), 3)
+    assert r.peak_eu is not None and r.peak_eu > 1.0
+    assert r.breadth == 1.0  # the one probe is beyond its own envelope
+    assert r.probes[0].beyond_envelope
+
+
+def test_self_baseline_converged_within_window_is_self_stable():
+    from auspexai_tenant.benchmark import drift_benchmark_self
+
+    # Only baseline rounds exist (the run converged at K, no monitoring round):
+    # self-stable by construction — reported 0.0, not None, with a clear note.
+    b = _round_bundle([(r, "p-a", "h", 0.9, 20, [["x", 1]]) for r in range(3)])
+    r = drift_benchmark_self(b, 5)  # K exceeds the rounds present
+    assert r.peak_eu == 0.0 and r.breadth == 0.0
+    assert any("no monitoring rows" in n and "self-stable" in n for n in r.notes)
+
+
+def test_self_baseline_no_baseline_rows_is_named_not_zero():
+    from auspexai_tenant.benchmark import drift_benchmark_self
+
+    # Every row is past the boundary (round >= K): the split can't self-reference.
+    # Named as unscored (peak None), never mislabeled as 0 drift.
+    b = _round_bundle([(r, "p-a", "h", 0.9, 20, [["x", 1]]) for r in (5, 6, 7)])
+    r = drift_benchmark_self(b, 3)
+    assert r.peak_eu is None
+    assert any("no baseline rows" in n for n in r.notes)
+
+
+def test_self_baseline_requires_positive_k():
+    from auspexai_tenant.benchmark import drift_benchmark_self
+
+    b = _round_bundle([(0, "p-a", "h", 0.9, 20, [["x", 1]])])
+    try:
+        drift_benchmark_self(b, 0)
+        raise AssertionError("expected ValueError for baseline_rounds=0")
+    except ValueError as e:
+        assert "baseline_rounds > 0" in str(e)
+
+
+def test_self_baseline_scores_observation_basis_rows():
+    from auspexai_tenant.benchmark import drift_benchmark_self
+
+    # The drift studies run process_only, so their rows land in
+    # additional_results (basis 'observation'), not consensus_results — the
+    # self-baseline split must reach them too.
+    rows = [(r, "p-a", "h", 0.90, 20, [["x", 1]]) for r in range(3)]
+    rows += [(3, "p-a", "h2", 0.50, 20, [["x", 1]])]
+    r = drift_benchmark_self(_round_bundle(rows, basis="observation"), 3)
+    assert r.peak_eu is not None and r.peak_eu > 1.0
+
+
+def test_benchmark_config_self_mode_and_baseline_rounds(tmp_path):
+    from auspexai_tenant.experiment_config import load_experiment_config
+
+    p = tmp_path / "experiment.toml"
+    p.write_text(
+        '[experiment]\nlabel = "x"\n[driver]\nbaseline_rounds = 3\nmax_rounds = 100\n'
+        '[benchmark]\nmode = "self_baseline"\n'
+    )
+    cfg = load_experiment_config(p)
+    assert cfg.benchmark_mode == "self_baseline"
+    assert cfg.benchmark_reference is None  # no external reference in self mode
+    assert cfg.benchmark_baseline_rounds == 3
+
+
+def test_benchmark_reference_self_alias_and_k_clamps_to_max_rounds(tmp_path):
+    from auspexai_tenant.experiment_config import load_experiment_config
+
+    # reference = "self" is the self_baseline alias; K clamps to max_rounds.
+    p = tmp_path / "experiment.toml"
+    p.write_text(
+        '[experiment]\nlabel = "x"\n[driver]\nbaseline_rounds = 9\nmax_rounds = 4\n'
+        '[benchmark]\nreference = "self"\n'
+    )
+    cfg = load_experiment_config(p)
+    assert cfg.benchmark_mode == "self_baseline"
+    assert cfg.benchmark_reference is None
+    assert cfg.benchmark_baseline_rounds == 4  # min(9, 4)
+
+
+def test_benchmark_bad_mode_is_rejected(tmp_path):
+    import pytest as _pytest
+
+    from auspexai_tenant.experiment_config import load_experiment_config
+
+    p = tmp_path / "experiment.toml"
+    p.write_text('[experiment]\nlabel = "x"\n[benchmark]\nmode = "whoops"\n')
+    with _pytest.raises(ValueError, match="mode must be"):
+        load_experiment_config(p).benchmark_mode  # noqa: B018
+
+
+def test_record_and_auto_benchmark_self_baseline(tmp_path, monkeypatch, capsys):
+    # End-to-end: launch records a self-baseline declaration (K from [driver]),
+    # and completion auto-scores the run against its OWN baseline → benchmark_self.json.
+    import json as _json
+
+    import auspexai_tenant.cli as cli_mod
+    from auspexai_tenant.experiment_config import load_experiment_config
+
+    monkeypatch.setenv("AUSPEXAI_RUNS_DIR", str(tmp_path / "runs"))
+    p = tmp_path / "experiment.toml"
+    p.write_text(
+        '[experiment]\nlabel = "lab-z"\n[driver]\nbaseline_rounds = 3\n'
+        '[benchmark]\nmode = "self_baseline"\n'
+    )
+    cfg = load_experiment_config(p)
+    cli_mod._record_benchmark_declaration(cfg, "exp-z", "lab-z")
+    run_dir = tmp_path / "runs" / "lab-z"
+    decl = _json.loads((run_dir / "benchmark_reference.json").read_text())
+    assert decl["mode"] == "self_baseline" and decl["baseline_rounds"] == 3
+
+    # A monitoring round (r3) drifts beyond the baseline (r0..2) → scored self-drift.
+    rows = [(r, "p-a", "h", 0.90, 20, [["x", 1]]) for r in range(3)]
+    rows += [(3, "p-a", "h2", 0.50, 20, [["x", 1]])]
+    bundle = _round_bundle(rows)
+
+    class _Client:
+        def export(self, exp_id):
+            return bundle
+
+    class _Ok:
+        ok = True
+
+    monkeypatch.setattr("auspexai_tenant.evidence.verify_bundle", lambda b: _Ok())
+    cli_mod._auto_benchmark(_Client(), "lab-z")
+    saved = _json.loads((run_dir / "benchmark_self.json").read_text())
+    assert saved["reference"] == {"mode": "self_baseline", "baseline_rounds": 3}
+    assert saved["report"]["peak_eu"] > 1.0
+    assert "self-drift peak" in capsys.readouterr().out
+    cli_mod._auto_benchmark(_Client(), "lab-z")  # idempotent — no re-score/crash
+
+
 def test_registry_entry_signs_and_verifies_and_tamper_fails():
     # G5: the entry is the researcher's SIGNED claim — pubkey inside the signed
     # body (key identity is part of the claim), any field tamper breaks it.

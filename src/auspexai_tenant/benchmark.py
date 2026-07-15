@@ -47,6 +47,7 @@ REUSES the declared envelope, it never invents one):
 from __future__ import annotations
 
 import json
+import re
 import statistics
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -447,6 +448,161 @@ def drift_benchmark_bundles(
                 "feature schemas differ between the bundles; the REFERENCE bundle's "
                 "declared envelope was used",
             ),
+        )
+    return report
+
+
+# ── self-baseline (the run scores against ITS OWN early rounds) ───────────────
+# self_baseline_drift_design.md §3.1: drift is a model's change from its OWN
+# established normal, not its distance to a fixed anchor model. The driver spends
+# the first K rounds as a CALIBRATION phase (drift_driver.py baseline_rounds);
+# here the same run's baseline rows (round < K) become the reference and its
+# monitoring rows (round >= K) the observations — reference-agnostic
+# drift_benchmark does the rest. K is read from the benchmark declaration (which
+# records [driver].baseline_rounds at launch); it is hash-attested in the signed
+# manifest via config_provenance.resolved_config_sha256. The round is parsed from
+# the unit_id the driver stamps as "<prefix>-<probe_id>-r<round>".
+
+_ROUND_RE = re.compile(r"-r(\d+)$")
+
+
+def round_of_unit(unit_id: str | None) -> int | None:
+    """The round index the driver encoded in a unit_id (`…-r<round>`), or None
+    when the id doesn't carry one (a foreign/hand-authored unit)."""
+    m = _ROUND_RE.search(unit_id or "")
+    return int(m.group(1)) if m else None
+
+
+def observations_with_round_from_bundle(
+    bundle: dict, *, include_diverged: bool = False
+) -> tuple[list[tuple[int | None, dict]], dict[str, dict]]:
+    """Like `observations_from_bundle`, but pairs each payload with the ROUND
+    parsed from its unit_id — what the self-baseline split needs. Same row
+    selection (consensus + observation-basis additional_results; diverged only on
+    opt-in), same schema source."""
+    rows: list[tuple[int | None, dict]] = []
+    for r in bundle.get("consensus_results") or []:
+        if r.get("payload"):
+            rows.append((round_of_unit(r.get("unit_id")), r["payload"]))
+    for r in bundle.get("additional_results") or []:
+        basis = r.get("integrity_basis")
+        if not r.get("payload"):
+            continue
+        if basis == "observation" or (include_diverged and basis in ("diverged", "outlier")):
+            rows.append((round_of_unit(r.get("unit_id")), r["payload"]))
+    schema = (bundle.get("manifest") or {}).get("feature_schema") or {}
+    return rows, schema
+
+
+def split_self_baseline(
+    rows: list[tuple[int | None, dict]], baseline_rounds: int
+) -> tuple[list[dict], list[dict], dict[str, int]]:
+    """Split (round, payload) rows at the K boundary the driver froze at:
+    baseline = round < K, monitoring = round >= K. Rows whose round can't be
+    parsed are dropped from both sides and counted (they can't be placed on the
+    timeline). Returns (baseline_payloads, monitoring_payloads, stats)."""
+    baseline: list[dict] = []
+    monitoring: list[dict] = []
+    unplaced = 0
+    for rnd, payload in rows:
+        if rnd is None:
+            unplaced += 1
+        elif rnd < baseline_rounds:
+            baseline.append(payload)
+        else:
+            monitoring.append(payload)
+    return (
+        baseline,
+        monitoring,
+        {
+            "baseline_rounds": baseline_rounds,
+            "baseline_rows": len(baseline),
+            "monitoring_rows": len(monitoring),
+            "unplaced_rows": unplaced,
+        },
+    )
+
+
+def drift_benchmark_self(
+    bundle: dict,
+    baseline_rounds: int,
+    *,
+    key_feature: str = "probe_id",
+    include_diverged: bool = False,
+) -> DriftBenchmark:
+    """Self-baseline Drift Benchmark: score a run's MONITORING rounds (round >= K)
+    against its OWN BASELINE rounds (round < K) — drift from this model's own
+    normal (the Sentinel method), NOT distance to a fixed anchor model. The
+    reference-agnostic `drift_benchmark` does the math unchanged; only the
+    reference differs (the run's own early rows). The envelope is the run's own
+    declared feature_schema.
+
+    baseline_rounds must be > 0. A run that converged inside the baseline window
+    (no monitoring rows) is, by construction, self-stable: reported as peak 0.0 EU
+    / 0% breadth with an explanatory note (a deterministic model that never left
+    its baseline — cf. the prototype's gpt-oss greedy = 0.00x self-drift)."""
+    if baseline_rounds <= 0:
+        raise ValueError("drift_benchmark_self requires baseline_rounds > 0 (a self-baseline run)")
+    rows, schema = observations_with_round_from_bundle(bundle, include_diverged=include_diverged)
+    baseline, monitoring, stats = split_self_baseline(rows, baseline_rounds)
+
+    split_note = (
+        f"self-baseline: reference = this run's first {baseline_rounds} round(s) "
+        f"({stats['baseline_rows']} baseline rows); scored {stats['monitoring_rows']} "
+        f"monitoring row(s) against them"
+        + (
+            f"; {stats['unplaced_rows']} row(s) had no parseable round"
+            if stats["unplaced_rows"]
+            else ""
+        )
+    )
+
+    if not baseline:
+        # No baseline rows at all — the split can't self-reference. Return an
+        # unscored report that says why (rather than mislabeling it 0 drift).
+        return DriftBenchmark(
+            probes=(),
+            peak_eu=None,
+            breadth=None,
+            byte_divergence_rate=None,
+            key_feature=key_feature,
+            notes=(
+                split_note,
+                "no baseline rows recovered (round < K) — nothing to self-reference; "
+                "check that the run issued its baseline rounds and the unit_ids carry -r<round>",
+            ),
+        )
+    if not monitoring:
+        # Converged within the baseline window: the panel never produced a
+        # post-baseline round, so there is no self-drift by construction.
+        return DriftBenchmark(
+            probes=(),
+            peak_eu=0.0,
+            breadth=0.0,
+            byte_divergence_rate=0.0,
+            key_feature=key_feature,
+            notes=(
+                split_note,
+                "no monitoring rows (round >= K): the run converged within its baseline "
+                "window — self-stable by construction (zero drift from its own baseline)",
+            ),
+        )
+
+    report = drift_benchmark(monitoring, baseline, schema, key_feature=key_feature)
+    report = replace(report, notes=(split_note, *report.notes))
+
+    diverged = diverged_by_key_from_bundle(bundle, key_feature=key_feature)
+    if diverged:
+        report = replace(
+            report,
+            notes=(
+                *report.notes,
+                "diverged units are signed evidence the run could not corroborate those "
+                "units (within-run disagreement); the count is reported, never folded into "
+                "the drift scalar",
+            ),
+            diverged_units_total=sum(diverged.values()),
+            diverged_by_key=diverged,
         )
     return report
 
