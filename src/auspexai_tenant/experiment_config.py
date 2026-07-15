@@ -118,11 +118,11 @@ class ExperimentConfig:
         b = self.raw.get("benchmark")
         if not isinstance(b, dict):
             return None
-        unknown = set(b) - {"reference", "mode"}
+        unknown = set(b) - {"reference", "mode", "calibrate_envelope"}
         if unknown:
             raise ValueError(
                 f"[benchmark] has unknown key(s) {sorted(unknown)} — "
-                "only 'reference' and 'mode' are defined"
+                "only 'reference', 'mode', and 'calibrate_envelope' are defined"
             )
         if self.benchmark_mode == "self_baseline":
             return None  # the reference is this run's own baseline rounds
@@ -156,6 +156,16 @@ class ExperimentConfig:
         except (TypeError, ValueError):
             pass
         return k
+
+    @property
+    def benchmark_calibrate_envelope(self) -> bool:
+        """`[benchmark].calibrate_envelope` — §3.2 opt-in: in self_baseline mode,
+        normalize each probe/feature's drift by ITS OWN baseline wobble (floored at
+        the declared C7 envelope) so "1 EU" means this model's own natural
+        variation, not the fixed C7 floor. Off = the fixed declared envelope
+        (§3.1). No effect in fixed_reference mode."""
+        b = self.raw.get("benchmark")
+        return bool(b.get("calibrate_envelope")) if isinstance(b, dict) else False
 
     @property
     def key_path(self) -> str | None:

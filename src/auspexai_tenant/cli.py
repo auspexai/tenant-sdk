@@ -906,16 +906,22 @@ def _record_benchmark_declaration(cfg, experiment_id: str, label: str) -> None:
                 err=True,
             )
             return
+        calibrate = cfg.benchmark_calibrate_envelope
         decl = {
             "schema": "auspexai-benchmark-declaration/v0",
             "mode": "self_baseline",
             "experiment_id": experiment_id,
             "label": label,
             "baseline_rounds": k,
+            "calibrate_envelope": calibrate,
             "declared_at": datetime.now(UTC).isoformat(),
             "source": source,
         }
-        msg = f"benchmark declared: self-baseline over the first {k} round(s) (recorded beside the run)"
+        msg = (
+            f"benchmark declared: self-baseline over the first {k} round(s)"
+            + (" (self-calibrated envelope)" if calibrate else "")
+            + " (recorded beside the run)"
+        )
     else:
         if not ref:
             return
@@ -973,10 +979,15 @@ def _auto_benchmark(client, label: str, runs_dir: str | None = None) -> None:
     if mode == "self_baseline":
         # Self-baseline: one bundle, split at K — no external reference to export.
         k = int(decl.get("baseline_rounds") or 0)
+        calibrate = bool(decl.get("calibrate_envelope"))
         out_path = layout.dir / "benchmark_self.json"
         if out_path.exists() or k <= 0:
             return  # already scored (resumed run) or nothing to self-reference
-        click.echo(f"benchmark: scoring self-baseline (first {k} round(s)) …")
+        click.echo(
+            f"benchmark: scoring self-baseline (first {k} round(s))"
+            + (" with a self-calibrated envelope" if calibrate else "")
+            + " …"
+        )
         try:
             from datetime import UTC, datetime
 
@@ -991,12 +1002,16 @@ def _auto_benchmark(client, label: str, runs_dir: str | None = None) -> None:
                     err=True,
                 )
                 return
-            report = drift_benchmark_self(bundle, k)
+            report = drift_benchmark_self(bundle, k, calibrate_envelope=calibrate)
             record = {
                 "schema": "auspexai-drift-benchmark-report/v0",
                 "computed_at": datetime.now(UTC).isoformat(),
                 "observation": {"experiment_id": exp_id, "label": label},
-                "reference": {"mode": "self_baseline", "baseline_rounds": k},
+                "reference": {
+                    "mode": "self_baseline",
+                    "baseline_rounds": k,
+                    "calibrate_envelope": calibrate,
+                },
                 "report": report.to_dict(),
             }
             layout.dir.mkdir(parents=True, exist_ok=True)
@@ -2146,6 +2161,12 @@ def benchmark_drift(
     help="Also score diverged/outlier payloads (forensics — out of the scalar by default).",
 )
 @click.option(
+    "--calibrate-envelope",
+    is_flag=True,
+    help="§3.2: normalize drift by each probe's OWN baseline wobble (floored at the "
+    "declared envelope) — 1 EU = this model's own natural variation, not the C7 floor.",
+)
+@click.option(
     "--no-verify",
     is_flag=True,
     help="Skip verify_bundle on the input (offline scoring of unverified data).",
@@ -2156,6 +2177,7 @@ def benchmark_self(
     key_feature: str,
     as_json: bool,
     include_diverged: bool,
+    calibrate_envelope: bool,
     no_verify: bool,
 ) -> None:
     """Score a run's drift against ITS OWN baseline — self-baseline mode.
@@ -2184,7 +2206,11 @@ def benchmark_self(
         sys.exit(1)
     try:
         report = drift_benchmark_self(
-            data, baseline_rounds, key_feature=key_feature, include_diverged=include_diverged
+            data,
+            baseline_rounds,
+            key_feature=key_feature,
+            include_diverged=include_diverged,
+            calibrate_envelope=calibrate_envelope,
         )
     except ValueError as e:
         click.echo(f"ERROR: {e}", err=True)

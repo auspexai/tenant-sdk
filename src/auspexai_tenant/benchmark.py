@@ -523,12 +523,100 @@ def split_self_baseline(
     )
 
 
+def _scalar_features(feature_schema: dict[str, dict]) -> dict[str, dict]:
+    """The features that participate in the EU scalar (same filter drift_benchmark
+    uses): a declared, non-binary `comparison`."""
+    return {
+        path: decl
+        for path, decl in feature_schema.items()
+        if isinstance(decl.get("comparison"), dict)
+        and decl["comparison"].get("rule") in SCALAR_RULES
+    }
+
+
+def self_calibrated_normalizers(
+    baseline: list[dict], feature_schema: dict[str, dict], *, key_feature: str = "probe_id"
+) -> dict[tuple[str, str], float]:
+    """§3.2 — the self-calibrated envelope. Per (probe, scalar-feature), the
+    normalizer is the WIDEST baseline-vs-baseline delta in DECLARED envelope units
+    — i.e. how much this model's OWN baseline naturally wobbles — floored at 1.0
+    (the declared C7 envelope). Dividing a monitoring EU by it makes 1.0 calibrated
+    EU mean "as far as the widest normal baseline variation for THIS model/probe."
+
+    The floor at 1.0 is deliberate: self-calibration only LOOSENS the envelope for a
+    genuinely noisy model, never tightens BELOW the calibrated-safe C7 floor — a
+    K-round baseline can under-observe rare variation, so a hyper-tight
+    self-envelope would fabricate drift. (Pairs mirror drift_benchmark's ordered
+    obs x ref convention; the max is the conservative 'widest normal wobble'.)"""
+    by_probe: dict[str, list[dict]] = {}
+    for r in baseline:
+        k = _get_path(r, key_feature)
+        if k is not None:
+            by_probe.setdefault(str(k), []).append(r)
+    norms: dict[tuple[str, str], float] = {}
+    for probe, rows in by_probe.items():
+        for path, decl in _scalar_features(feature_schema).items():
+            cmp_ = decl["comparison"]
+            valid = [r for r in rows if _valid_for(decl, r)]
+            eus = [
+                eu
+                for a in valid
+                for b in valid
+                if (eu := envelope_units(cmp_, _get_path(a, path), _get_path(b, path))) is not None
+            ]
+            norms[(probe, path)] = max(max(eus, default=0.0), 1.0)
+    return norms
+
+
+def _apply_self_calibration(
+    report: DriftBenchmark, norms: dict[tuple[str, str], float]
+) -> DriftBenchmark:
+    """Rescale a declared-envelope report into self-calibrated EU: divide each
+    (probe, feature) EU by its baseline-wobble normalizer, then recompute the
+    per-probe peak/beyond and the headline peak/breadth. The byte overlay (binary,
+    uncalibrated) is untouched."""
+    new_probes: list[ProbeDrift] = []
+    for p in report.probes:
+        feats = tuple(
+            replace(
+                f,
+                eu=(f.eu / norms.get((p.key, f.feature), 1.0) if f.eu is not None else None),
+                eu_max=(
+                    f.eu_max / norms.get((p.key, f.feature), 1.0) if f.eu_max is not None else None
+                ),
+            )
+            for f in p.features
+        )
+        scored = [f.eu for f in feats if f.eu is not None]
+        peak = max(scored) if scored else None
+        new_probes.append(
+            replace(
+                p,
+                features=feats,
+                peak_eu=peak,
+                beyond_envelope=bool(peak is not None and peak >= 1.0),
+            )
+        )
+    scored_probes = [p for p in new_probes if p.peak_eu is not None]
+    return replace(
+        report,
+        probes=tuple(new_probes),
+        peak_eu=max((p.peak_eu for p in scored_probes), default=None),
+        breadth=(
+            sum(1 for p in scored_probes if p.beyond_envelope) / len(scored_probes)
+            if scored_probes
+            else None
+        ),
+    )
+
+
 def drift_benchmark_self(
     bundle: dict,
     baseline_rounds: int,
     *,
     key_feature: str = "probe_id",
     include_diverged: bool = False,
+    calibrate_envelope: bool = False,
 ) -> DriftBenchmark:
     """Self-baseline Drift Benchmark: score a run's MONITORING rounds (round >= K)
     against its OWN BASELINE rounds (round < K) — drift from this model's own
@@ -536,6 +624,11 @@ def drift_benchmark_self(
     reference-agnostic `drift_benchmark` does the math unchanged; only the
     reference differs (the run's own early rows). The envelope is the run's own
     declared feature_schema.
+
+    calibrate_envelope (§3.2, opt-in): after scoring, rescale each probe/feature
+    by ITS OWN baseline wobble (`self_calibrated_normalizers`), so "1.0 EU" means
+    this model's own natural run-to-run variation rather than the fixed C7 floor.
+    Floored at the declared envelope, so it only loosens for a noisy model.
 
     baseline_rounds must be > 0. A run that converged inside the baseline window
     (no monitoring rows) is, by construction, self-stable: reported as peak 0.0 EU
@@ -589,6 +682,18 @@ def drift_benchmark_self(
         )
 
     report = drift_benchmark(monitoring, baseline, schema, key_feature=key_feature)
+    if calibrate_envelope:
+        norms = self_calibrated_normalizers(baseline, schema, key_feature=key_feature)
+        report = _apply_self_calibration(report, norms)
+        report = replace(
+            report,
+            notes=(
+                *report.notes,
+                "self-calibrated envelope (§3.2): each probe/feature EU is normalized by its "
+                "OWN baseline wobble (floored at the declared C7 envelope) — 1.0 EU = this "
+                "model's widest normal baseline variation, not the fixed C7 noise floor",
+            ),
+        )
     report = replace(report, notes=(split_note, *report.notes))
 
     diverged = diverged_by_key_from_bundle(bundle, key_feature=key_feature)

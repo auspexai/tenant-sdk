@@ -509,6 +509,52 @@ def test_self_baseline_scores_observation_basis_rows():
     assert r.peak_eu is not None and r.peak_eu > 1.0
 
 
+# ── §3.2 self-calibrated envelope (drift measured vs the model's OWN wobble) ──
+
+
+def test_self_calibrated_normalizers_is_widest_baseline_wobble_floored_at_one():
+    from auspexai_tenant.benchmark import self_calibrated_normalizers
+
+    # A noisy baseline (TTR swings 0.90..0.70) → normalizer above the C7 floor.
+    noisy = [_obs("p-a", "h", 0.90, 20, [["x", 1]]), _obs("p-a", "h", 0.70, 20, [["x", 1]])]
+    assert self_calibrated_normalizers(noisy, SCHEMA)[("p-a", "lexical.type_token_ratio")] > 1.0
+    # A perfectly stable baseline floors at exactly 1.0 (never tightens below C7).
+    stable = [_obs("p-a", "h", 0.90, 20, [["x", 1]]), _obs("p-a", "h", 0.90, 20, [["x", 1]])]
+    assert self_calibrated_normalizers(stable, SCHEMA)[("p-a", "lexical.type_token_ratio")] == 1.0
+
+
+def test_self_calibrated_envelope_loosens_for_a_noisy_baseline():
+    from auspexai_tenant.benchmark import drift_benchmark_self
+
+    # Baseline TTR swings 0.90..0.70 (this probe is naturally noisy); a monitoring
+    # round at 0.85 is WITHIN that own wobble. The fixed C7 envelope flags it; the
+    # self-calibrated envelope reads it as < 1 EU (within the model's own noise).
+    rows = [(0, "p-a", "h", 0.90, 20, [["x", 1]]), (1, "p-a", "h", 0.70, 20, [["x", 1]])]
+    rows += [(2, "p-a", "h2", 0.85, 20, [["x", 1]])]
+    b = _round_bundle(rows)
+    fixed = drift_benchmark_self(b, 2)
+    calib = drift_benchmark_self(b, 2, calibrate_envelope=True)
+    assert fixed.peak_eu > 1.0  # fixed C7 envelope flags it
+    assert calib.peak_eu < 1.0  # within the model's OWN baseline wobble
+    assert calib.probes[0].beyond_envelope is False
+    assert any("self-calibrated envelope" in n for n in calib.notes)
+
+
+def test_self_calibrated_envelope_floors_at_declared_for_a_stable_baseline():
+    from auspexai_tenant.benchmark import drift_benchmark_self
+
+    # A perfectly stable baseline → normalizer floored at 1.0, so calibrated ==
+    # fixed: self-calibration only loosens for a noisy model, never tightens below
+    # the calibrated-safe C7 floor. A genuine monitoring drift still reads beyond.
+    rows = [(r, "p-a", "h", 0.90, 20, [["x", 1]]) for r in range(3)]
+    rows += [(3, "p-a", "h2", 0.70, 20, [["x", 1]])]
+    b = _round_bundle(rows)
+    fixed = drift_benchmark_self(b, 3)
+    calib = drift_benchmark_self(b, 3, calibrate_envelope=True)
+    assert fixed.peak_eu is not None and fixed.peak_eu > 1.0
+    assert calib.peak_eu == fixed.peak_eu  # floored → unchanged
+
+
 def test_benchmark_config_self_mode_and_baseline_rounds(tmp_path):
     from auspexai_tenant.experiment_config import load_experiment_config
 
@@ -521,6 +567,20 @@ def test_benchmark_config_self_mode_and_baseline_rounds(tmp_path):
     assert cfg.benchmark_mode == "self_baseline"
     assert cfg.benchmark_reference is None  # no external reference in self mode
     assert cfg.benchmark_baseline_rounds == 3
+
+
+def test_benchmark_calibrate_envelope_config(tmp_path):
+    from auspexai_tenant.experiment_config import load_experiment_config
+
+    on = tmp_path / "on.toml"
+    on.write_text(
+        '[experiment]\nlabel = "x"\n[driver]\nbaseline_rounds = 3\n'
+        '[benchmark]\nmode = "self_baseline"\ncalibrate_envelope = true\n'
+    )
+    assert load_experiment_config(on).benchmark_calibrate_envelope is True
+    off = tmp_path / "off.toml"
+    off.write_text('[experiment]\nlabel = "x"\n[benchmark]\nmode = "self_baseline"\n')
+    assert load_experiment_config(off).benchmark_calibrate_envelope is False
 
 
 def test_benchmark_reference_self_alias_and_k_clamps_to_max_rounds(tmp_path):
@@ -568,6 +628,7 @@ def test_record_and_auto_benchmark_self_baseline(tmp_path, monkeypatch, capsys):
     run_dir = tmp_path / "runs" / "lab-z"
     decl = _json.loads((run_dir / "benchmark_reference.json").read_text())
     assert decl["mode"] == "self_baseline" and decl["baseline_rounds"] == 3
+    assert decl["calibrate_envelope"] is False  # not declared → off
 
     # A monitoring round (r3) drifts beyond the baseline (r0..2) → scored self-drift.
     rows = [(r, "p-a", "h", 0.90, 20, [["x", 1]]) for r in range(3)]
@@ -584,7 +645,11 @@ def test_record_and_auto_benchmark_self_baseline(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("auspexai_tenant.evidence.verify_bundle", lambda b: _Ok())
     cli_mod._auto_benchmark(_Client(), "lab-z")
     saved = _json.loads((run_dir / "benchmark_self.json").read_text())
-    assert saved["reference"] == {"mode": "self_baseline", "baseline_rounds": 3}
+    assert saved["reference"] == {
+        "mode": "self_baseline",
+        "baseline_rounds": 3,
+        "calibrate_envelope": False,
+    }
     assert saved["report"]["peak_eu"] > 1.0
     assert "self-drift peak" in capsys.readouterr().out
     cli_mod._auto_benchmark(_Client(), "lab-z")  # idempotent — no re-score/crash
