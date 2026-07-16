@@ -1758,16 +1758,29 @@ def _fmt_uptime(seconds: float) -> str:
 
 
 @experiment.command("ps")
-@click.option("--prune", is_flag=True, help="Also remove records of drivers that have exited.")
-def experiment_ps(prune: bool) -> None:
+@click.option(
+    "--prune",
+    is_flag=True,
+    help="Clear records of exited drivers (their driver.log is archived under _ended/).",
+)
+@click.option(
+    "--purge",
+    is_flag=True,
+    help="With --prune, HARD-DELETE exited drivers' logs too (reclaim space; loses post-mortems).",
+)
+def experiment_ps(prune: bool, purge: bool) -> None:
     """List detached experiment drivers (`launch`/`run --detach`) and whether each is
     still alive — the visibility a foreground driver never gave you. A `stopped` row
     whose experiment isn't finished is a driver that died; resume it with
-    `experiment run <exp-id> --detach`."""
+    `experiment run <exp-id> --detach`, and read why it died in its driver.log."""
     from auspexai_tenant import driver_manager as dm
 
     if prune:
-        click.echo(f"pruned {dm.prune_dead()} exited driver record(s).")
+        n = dm.prune_dead(keep_logs=not purge)
+        if purge:
+            click.echo(f"pruned {n} exited driver record(s) (logs deleted).")
+        else:
+            click.echo(f"pruned {n} exited driver record(s) — logs kept under {dm.ended_dir()}")
     recs = dm.list_drivers()
     if not recs:
         click.echo("no detached drivers. start one with:")
@@ -1790,8 +1803,17 @@ def experiment_ps(prune: bool) -> None:
 @experiment.command("stop")
 @click.argument("target", required=False)
 @click.option("--all", "stop_all", is_flag=True, help="Stop every live detached driver.")
-@click.option("--prune", is_flag=True, help="After stopping, remove records of exited drivers.")
-def experiment_stop(target: str | None, stop_all: bool, prune: bool) -> None:
+@click.option(
+    "--prune",
+    is_flag=True,
+    help="After stopping, clear exited-driver records (logs archived under _ended/).",
+)
+@click.option(
+    "--purge",
+    is_flag=True,
+    help="With --prune, HARD-DELETE exited drivers' logs too (loses post-mortems).",
+)
+def experiment_stop(target: str | None, stop_all: bool, prune: bool, purge: bool) -> None:
     """Stop a detached driver — SIGINT, the same clean Ctrl-C path (finalizes the run
     over its completed work, or leaves it server-side if it was started --resumable).
     TARGET matches a run-id, experiment id, label, or profile."""
@@ -1814,7 +1836,10 @@ def experiment_stop(target: str | None, stop_all: bool, prune: bool) -> None:
         dm.stop_driver(r)
         click.echo(f"stopped {r.experiment_id or r.run_id} (pid {r.pid})")
     if prune:
-        dm.prune_dead()
+        n = dm.prune_dead(keep_logs=not purge)
+        if n:
+            where = "deleted" if purge else f"kept under {dm.ended_dir()}"
+            click.echo(f"pruned {n} exited driver record(s) — logs {where}.")
 
 
 @experiment.command("reduce")

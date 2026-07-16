@@ -179,16 +179,26 @@ def set_status(status: str) -> None:
 
 
 def list_drivers() -> list[DriverRecord]:
-    """All recorded drivers, newest first."""
+    """All ACTIVE driver records, newest first. `_`-prefixed directories (e.g.
+    `_ended/`, the post-mortem archive) are reserved and skipped."""
     out: list[DriverRecord] = []
     for run_dir in drivers_dir().iterdir():
-        if not run_dir.is_dir():
+        if not run_dir.is_dir() or run_dir.name.startswith("_"):
             continue
         meta = _read_meta(run_dir)
         if meta:
             out.append(_to_record(run_dir, meta))
     out.sort(key=lambda r: r.started_at, reverse=True)
     return out
+
+
+def ended_dir() -> Path:
+    """`drivers/_ended/` — the post-mortem archive for exited drivers. Keeps each
+    dead driver's `driver.log` (+ meta) for diagnosis. Reserved name, skipped by
+    `list_drivers`."""
+    d = drivers_dir() / "_ended"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def find_drivers(target: str) -> list[DriverRecord]:
@@ -205,11 +215,26 @@ def stop_driver(rec: DriverRecord, sig: int = signal.SIGINT) -> bool:
     return True
 
 
-def prune_dead() -> int:
-    """Remove records of drivers whose process has exited. Returns the count removed."""
+def prune_dead(*, keep_logs: bool = True) -> int:
+    """Clear the ACTIVE records of drivers whose process has exited. By default the
+    exited driver's directory — crucially its `driver.log` post-mortem — is ARCHIVED
+    under `_ended/<run-id>/` rather than deleted: a crashed driver's log is exactly
+    what diagnoses why it died, and it must survive a later `stop`/`prune` (deleting
+    it was a footgun — a `prune` erased the evidence). `keep_logs=False` hard-deletes
+    to reclaim space. Returns the count pruned."""
     n = 0
+    archive = ended_dir() if keep_logs else None
     for r in list_drivers():
-        if not r.alive:
+        if r.alive:
+            continue
+        if archive is not None:
+            dest = archive / r.dir.name
+            shutil.rmtree(dest, ignore_errors=True)  # replace any stale archive
+            try:
+                shutil.move(str(r.dir), str(dest))
+            except OSError:
+                shutil.rmtree(r.dir, ignore_errors=True)  # fallback: at least drop the record
+        else:
             shutil.rmtree(r.dir, ignore_errors=True)
-            n += 1
+        n += 1
     return n

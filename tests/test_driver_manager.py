@@ -77,6 +77,30 @@ def test_prune_removes_only_dead(drivers_home):
         _reap(live.pid)
 
 
+def test_prune_archives_the_driver_log_by_default(drivers_home):
+    # The fix: a pruned driver's driver.log — the post-mortem for a driver that died
+    # unexpectedly — must SURVIVE the prune (it used to be rmtree'd), archived under
+    # _ended/<run-id>/ and out of the active `ps` list.
+    dead = dm.spawn_detached(["true"], profile="dead")
+    os.waitpid(dead.pid, 0)
+    (dead.dir / "driver.log").write_text("Traceback (most recent call last): boom\n")
+    assert dm.prune_dead() == 1
+    assert dead.run_id not in [r.run_id for r in dm.list_drivers()]  # gone from active
+    archived = dm.ended_dir() / dead.dir.name / "driver.log"
+    assert archived.exists()  # ...but the log is preserved
+    assert "boom" in archived.read_text()
+
+
+def test_prune_purge_hard_deletes_the_log(drivers_home):
+    # keep_logs=False (the `--purge` escape hatch) reclaims space: no archive.
+    dead = dm.spawn_detached(["true"], profile="dead")
+    os.waitpid(dead.pid, 0)
+    (dead.dir / "driver.log").write_text("gone\n")
+    assert dm.prune_dead(keep_logs=False) == 1
+    assert not (dm.ended_dir() / dead.dir.name).exists()
+    assert not dead.dir.exists()
+
+
 def test_record_experiment_and_status_via_env(drivers_home, monkeypatch):
     run_dir = dm.drivers_dir() / "child-run"
     run_dir.mkdir(parents=True)
