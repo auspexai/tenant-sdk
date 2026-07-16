@@ -193,6 +193,11 @@ def build_entry_self(
     The caller has already custody-verified the one bundle."""
     rep = record.get("report") or {}
     ref = record.get("reference") or {}
+    # The record's reference carries K + calibrate_envelope either FLAT (the CLI's
+    # canonical {mode, baseline_rounds, calibrate_envelope}) or NESTED under a
+    # `self_baseline` block (the dashboard's _compute_self_benchmark shape). Read from
+    # whichever holds them so the entry always records the real K, not null.
+    sb = ref.get("self_baseline") or ref
     manifest = observation_bundle.get("manifest") or {}
     payload: dict[str, Any] = {
         "schema": ENTRY_SCHEMA,
@@ -208,8 +213,8 @@ def build_entry_self(
         "self_baseline": {
             "model": manifest_model(manifest),
             "generation": manifest_generation(manifest),
-            "baseline_rounds": ref.get("baseline_rounds"),
-            "calibrate_envelope": bool(ref.get("calibrate_envelope")),
+            "baseline_rounds": sb.get("baseline_rounds"),
+            "calibrate_envelope": bool(sb.get("calibrate_envelope")),
         },
         "observation": {
             **(record.get("observation") or {}),

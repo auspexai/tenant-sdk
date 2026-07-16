@@ -657,6 +657,64 @@ def test_record_and_auto_benchmark_self_baseline(tmp_path, monkeypatch, capsys):
     cli_mod._auto_benchmark(_Client(), "lab-z")  # idempotent — no re-score/crash
 
 
+def test_self_baseline_entry_carries_k_from_either_record_shape():
+    # build_entry_self must record the real K whether the record's `reference` is the
+    # CLI's canonical FLAT shape ({mode, baseline_rounds}) or the dashboard's NESTED
+    # shape ({self_baseline: {baseline_rounds}}); reading only flat serialized null K.
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from auspexai_tenant.benchmark_entry import build_entry_self, verify_entry
+
+    class _Key:
+        def __init__(self):
+            self._k = Ed25519PrivateKey.generate()
+            self.pubkey_hex = self._k.public_key().public_bytes_raw().hex()
+
+        def sign(self, data: bytes) -> bytes:
+            return self._k.sign(data)
+
+    report = {
+        "peak_eu": 1.1,
+        "breadth": 0.08,
+        "byte_divergence_rate": 0.05,
+        "diverged_units_total": None,
+        "key_feature": "probe_id",
+        "probes": [],
+    }
+    bundle = {
+        "manifest_hash": "m" * 64,
+        "manifest": {
+            "models": [{"id": "qwen3-1.7b-q4"}],
+            "inference_determinism": {"temperature": 0.8, "top_p": 0.9},
+        },
+        "attestation": {"merkle_root": "r" * 64, "algorithm": "result-set-v1"},
+    }
+
+    def _entry(reference):
+        e = build_entry_self(
+            record={
+                "computed_at": "2026-07-16T20:00:00+00:00",
+                "observation": {"experiment_id": "exp-a", "label": "run-a"},
+                "reference": reference,
+                "report": report,
+            },
+            observation_bundle=bundle,
+            tenant_id="vigiles-lab",
+            key=_Key(),
+        )
+        return verify_entry(e)
+
+    nested = _entry({"self_baseline": {"baseline_rounds": 5, "calibrate_envelope": True}})
+    assert nested["self_baseline"]["baseline_rounds"] == 5  # was null before the fix
+    assert nested["self_baseline"]["calibrate_envelope"] is True
+    flat = _entry({"mode": "self_baseline", "baseline_rounds": 7, "calibrate_envelope": False})
+    assert flat["self_baseline"]["baseline_rounds"] == 7
+    # model + generation come from the manifest regardless of the reference shape.
+    assert nested["entry_kind"] == "self_baseline"
+    assert nested["self_baseline"]["model"] == "qwen3-1.7b-q4"
+    assert "sampling" in nested["self_baseline"]["generation"]  # temp=0.8 → sampling(…)
+
+
 def test_registry_entry_signs_and_verifies_and_tamper_fails():
     # G5: the entry is the researcher's SIGNED claim — pubkey inside the signed
     # body (key identity is part of the claim), any field tamper breaks it.
