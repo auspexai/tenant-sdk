@@ -421,6 +421,7 @@ def manifest_dict_from_config(
                 "top_p",
                 "top_k",
                 "min_p",
+                "seed_policy",
             )
             if det.get(k) is not None
         }

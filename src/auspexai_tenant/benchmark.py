@@ -173,6 +173,11 @@ class DriftBenchmark:
     breadth: float | None  # fraction of scored probes with peak >= 1.0
     byte_divergence_rate: float | None
     key_feature: str
+    # The within-condition SPREAD overlay (self-baseline path): how WIDE this model's
+    # OWN output cloud is at this setting, in declared envelope units — orthogonal to
+    # drift (peak_eu = how far the cloud MOVED from baseline; dispersion = how wide it
+    # is). Descriptive companion, never folded into the drift scalar. §3.2 realised.
+    dispersion_eu: float | None = None
     notes: tuple[str, ...] = field(default_factory=tuple)
     # The WITHIN-RUN divergence overlay (bundle path only): units whose replicas
     # disagreed under an agreement reducer, read from the SIGNED predicate's
@@ -188,6 +193,7 @@ class DriftBenchmark:
             "peak_eu": self.peak_eu,
             "breadth": self.breadth,
             "byte_divergence_rate": self.byte_divergence_rate,
+            "dispersion_eu": self.dispersion_eu,
             "key_feature": self.key_feature,
             "notes": list(self.notes),
             "diverged_units_total": self.diverged_units_total,
@@ -534,6 +540,57 @@ def _scalar_features(feature_schema: dict[str, dict]) -> dict[str, dict]:
     }
 
 
+def within_condition_dispersion(
+    payloads: list[dict],
+    feature_schema: dict[str, dict],
+    *,
+    key_feature: str = "probe_id",
+    max_per_probe: int = 60,
+) -> float | None:
+    """The within-condition SPREAD (`dispersion_eu`): how wide a model's OWN output
+    cloud is at this setting, in its declared envelope units — the self-baseline §3.2
+    dispersion estimator surfaced as an output (diversity_seed_stream_design.md §2).
+
+    Per probe, over that probe's own responses, compute the pairwise `envelope_units`
+    for each scalar feature (the SAME calibrated EU the drift scalar uses); take the
+    MEDIAN pair per feature (robust), the MAX over features per probe (parallel to
+    `peak_eu`), and the MEAN over probes as the headline. Reference-agnostic and
+    ORTHOGONAL to drift: `peak_eu` is how far the cloud MOVED from baseline,
+    `dispersion_eu` is how WIDE it is — a stable model (peak 0) can still be diverse.
+
+    Returns 0.0 for a deterministic/seed-pinned run (every response identical → every
+    pair is a zero delta), and None when no probe yields a scored pair. Cost is
+    bounded by `max_per_probe` via an evenly-strided deterministic sample (all-pairs
+    is O(n^2)); size a run's rounds so the cap does not bite."""
+    scalars = _scalar_features(feature_schema)
+    if not scalars:
+        return None
+    by_probe: dict[str, list[dict]] = {}
+    for r in payloads:
+        k = _get_path(r, key_feature)
+        if k is not None:
+            by_probe.setdefault(str(k), []).append(r)
+    probe_spreads: list[float] = []
+    for rows in by_probe.values():
+        step = max(1, len(rows) // max_per_probe)  # even stride, representative not head-biased
+        sample = rows[::step][:max_per_probe]
+        feat_medians: list[float] = []
+        for path, decl in scalars.items():
+            cmp_ = decl["comparison"]
+            valid = [r for r in sample if _valid_for(decl, r)]
+            eus = [
+                eu
+                for i, a in enumerate(valid)
+                for b in valid[i + 1 :]
+                if (eu := envelope_units(cmp_, _get_path(a, path), _get_path(b, path))) is not None
+            ]
+            if eus:
+                feat_medians.append(statistics.median(eus))
+        if feat_medians:
+            probe_spreads.append(max(feat_medians))
+    return (sum(probe_spreads) / len(probe_spreads)) if probe_spreads else None
+
+
 def self_calibrated_normalizers(
     baseline: list[dict], feature_schema: dict[str, dict], *, key_feature: str = "probe_id"
 ) -> dict[tuple[str, str], float]:
@@ -673,6 +730,7 @@ def drift_benchmark_self(
             peak_eu=0.0,
             breadth=0.0,
             byte_divergence_rate=0.0,
+            dispersion_eu=within_condition_dispersion(baseline, schema, key_feature=key_feature),
             key_feature=key_feature,
             notes=(
                 split_note,
@@ -682,6 +740,15 @@ def drift_benchmark_self(
         )
 
     report = drift_benchmark(monitoring, baseline, schema, key_feature=key_feature)
+    # SPREAD overlay: the within-condition dispersion over the run's full response set
+    # (§3.2 estimator). ~0 under a pinned seed; the sampler's real range under a
+    # per-round seed-stream (diversity_seed_stream_design.md).
+    report = replace(
+        report,
+        dispersion_eu=within_condition_dispersion(
+            baseline + monitoring, schema, key_feature=key_feature
+        ),
+    )
     if calibrate_envelope:
         norms = self_calibrated_normalizers(baseline, schema, key_feature=key_feature)
         report = _apply_self_calibration(report, norms)
@@ -722,7 +789,11 @@ def format_report(report: DriftBenchmark) -> str:
     overlay = (
         f"{report.byte_divergence_rate:.0%}" if report.byte_divergence_rate is not None else "n/a"
     )
-    lines.append(f"drift benchmark: peak {peak} EU  ·  {breadth}  ·  byte-divergence {overlay}")
+    spread = f"{report.dispersion_eu:.2f} EU" if report.dispersion_eu is not None else "n/a"
+    lines.append(
+        f"drift benchmark: peak {peak} EU  ·  {breadth}  ·  byte-divergence {overlay}"
+        f"  ·  spread {spread}"
+    )
     if report.diverged_units_total:
         per_key = " · ".join(f"{k}: {n}" for k, n in sorted((report.diverged_by_key or {}).items()))
         lines.append(

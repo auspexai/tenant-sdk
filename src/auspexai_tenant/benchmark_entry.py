@@ -159,6 +159,7 @@ def _entry_report(rep: dict[str, Any], computed_at: Any) -> dict[str, Any]:
         "peak_eu": rep.get("peak_eu"),
         "breadth": rep.get("breadth"),
         "byte_divergence_rate": rep.get("byte_divergence_rate"),
+        "dispersion_eu": rep.get("dispersion_eu"),
         "diverged_units_total": rep.get("diverged_units_total"),
         "key_feature": rep.get("key_feature"),
         "computed_at": computed_at,

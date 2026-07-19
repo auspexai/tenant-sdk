@@ -477,6 +477,57 @@ def test_self_baseline_converged_within_window_is_self_stable():
     assert any("no monitoring rows" in n and "self-stable" in n for n in r.notes)
 
 
+# ── within-condition dispersion (the SPREAD overlay, diversity_seed_stream §2) ──
+
+
+def test_dispersion_is_zero_for_identical_responses():
+    from auspexai_tenant.benchmark import within_condition_dispersion
+
+    # A seed-pinned / deterministic condition: every response identical → every pair a
+    # zero delta → dispersion 0.0 (a genuine zero, not None — pairs DID score).
+    payloads = [_obs("p-a", "h", 0.90, 20, [["x", 1]]) for _ in range(5)]
+    assert within_condition_dispersion(payloads, SCHEMA) == 0.0
+
+
+def test_dispersion_is_positive_when_responses_spread():
+    from auspexai_tenant.benchmark import within_condition_dispersion
+
+    # A varied condition (what a per-round seed-stream produces): TTR 0.90 vs 0.50 is far
+    # beyond the 0.02-rel envelope → a wide output cloud → dispersion > 1.
+    payloads = [_obs("p-a", "h1", 0.90, 20, [["x", 1]]), _obs("p-a", "h2", 0.50, 20, [["x", 1]])]
+    disp = within_condition_dispersion(payloads, SCHEMA)
+    assert disp is not None and disp > 1.0
+
+
+def test_dispersion_is_none_without_scalar_features():
+    from auspexai_tenant.benchmark import within_condition_dispersion
+
+    # Only a binary (exact-rule) anchor → no scalar feature participates → None, never a
+    # misleading 0 (same honesty as the drift scalar's no-scalar-features path).
+    binary_only = {"probe_id": SCHEMA["probe_id"], "response_sha256": SCHEMA["response_sha256"]}
+    payloads = [_obs("p-a", "h", 0.9, 20, [["x", 1]]) for _ in range(3)]
+    assert within_condition_dispersion(payloads, binary_only) is None
+
+
+def test_self_baseline_reports_dispersion_orthogonal_to_zero_drift():
+    from auspexai_tenant.benchmark import drift_benchmark_self
+
+    # A stable model (no translation over the run) reads ~0 self-drift, yet a per-round
+    # seed-stream still gives it a real output cloud: dispersion_eu is populated and > 0
+    # while peak stays near the floor — the two axes are independent.
+    rows = [(r, "p-a", f"h{r % 2}", 0.90 if r % 2 else 0.50, 20, [["x", 1]]) for r in range(8)]
+    r = drift_benchmark_self(_round_bundle(rows), 4)
+    assert r.dispersion_eu is not None and r.dispersion_eu > 1.0
+
+
+def test_deterministic_self_run_reports_zero_dispersion():
+    from auspexai_tenant.benchmark import drift_benchmark_self
+
+    b = _round_bundle([(r, "p-a", "h", 0.90, 20, [["x", 1]]) for r in range(6)])
+    r = drift_benchmark_self(b, 3)
+    assert r.dispersion_eu == 0.0  # a pinned-seed run has no spread — the fixed-seed control
+
+
 def test_self_baseline_no_baseline_rows_is_named_not_zero():
     from auspexai_tenant.benchmark import drift_benchmark_self
 

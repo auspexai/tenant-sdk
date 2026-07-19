@@ -55,6 +55,33 @@ def test_negative_temperature_rejected():
         InferenceDeterminism(temperature=-0.1)
 
 
+# ── seed_policy: the per-round seed-stream (v0_6, diversity_seed_stream_design) ──
+
+
+def test_seed_policy_defaults_fixed():
+    # Every existing manifest is byte-for-byte unchanged: the default is the constant seed.
+    assert InferenceDeterminism().seed_policy == "fixed"
+    assert InferenceDeterminism(temperature=0.7, seed=0).seed_policy == "fixed"
+
+
+def test_seed_policy_per_round_requires_sampling():
+    # A seed-STREAM is meaningless under greedy (same declarative-enforcement hygiene the
+    # knobs follow) — declaring it at temperature 0 is rejected.
+    with pytest.raises(ValidationError, match="requires temperature > 0"):
+        InferenceDeterminism(seed_policy="per_round")
+
+
+def test_seed_policy_per_round_valid_under_sampling():
+    det = InferenceDeterminism(temperature=0.8, seed=0, top_p=0.9, seed_policy="per_round")
+    assert det.seed_policy == "per_round"
+    assert det.is_sampling
+
+
+def test_seed_policy_rejects_unknown_value():
+    with pytest.raises(ValidationError):
+        InferenceDeterminism(temperature=0.8, seed=0, seed_policy="random")
+
+
 @pytest.mark.parametrize(
     "knob,bad",
     [("top_p", 0.0), ("top_p", 1.5), ("top_k", 0), ("min_p", 1.0), ("min_p", -0.1)],

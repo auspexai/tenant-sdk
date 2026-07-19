@@ -108,6 +108,15 @@ class InferenceDeterminism(BaseModel):
     top_p: Annotated[float | None, Field(gt=0, le=1)] = None
     top_k: Annotated[int | None, Field(ge=1)] = None
     min_p: Annotated[float | None, Field(ge=0, lt=1)] = None
+    # v0_6 (diversity_seed_stream_design.md §3): the seed STREAM policy. "fixed" = one
+    # constant seed across all rounds (the reproducibility default — a probe's output is
+    # reproducible round-to-round, so drift is the signal). "per_round" = a declared,
+    # deterministic seed-stream (seed_r = seed + round); each round's effective seed is
+    # pinned + recorded, so the sampler's OWN range surfaces as within-condition
+    # dispersion instead of being pinned out. Only meaningful under sampling; the
+    # reproducibility floor (§5 of the determinism memo) is preserved — the memo already
+    # attests "the declared … seed-stream", not one constant.
+    seed_policy: Literal["fixed", "per_round"] = "fixed"
 
     @property
     def is_sampling(self) -> bool:
@@ -129,6 +138,11 @@ class InferenceDeterminism(BaseModel):
             raise ValueError(
                 f"sampling knobs {sorted(self.sampling_knobs)} require temperature > 0 "
                 "(greedy decoding never reads them — declare them only under sampling)"
+            )
+        if self.seed_policy == "per_round" and not self.is_sampling:
+            raise ValueError(
+                "seed_policy 'per_round' requires temperature > 0 — a seed-stream is "
+                "meaningless under greedy decoding (declare it only under sampling)"
             )
         return self
 
