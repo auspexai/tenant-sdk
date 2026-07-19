@@ -64,6 +64,15 @@ def manifest_generation(m: dict[str, Any]) -> str:
     return f"sampling(temp={t}{knob_s},seeded)"
 
 
+def manifest_seed_policy(m: dict[str, Any]) -> str:
+    """The seed STREAM policy a signed manifest declares — "fixed" (one constant seed;
+    a DRIFT run) or "per_round" (a seed-stream; a DIVERSITY run whose headline is
+    dispersion_eu). The board reads this to plot the two on separate views instead of
+    averaging them together (diversity_seed_stream_design.md §5)."""
+    d = m.get("inference_determinism")
+    return (d or {}).get("seed_policy") or "fixed"
+
+
 def derive_config_delta(obs: dict[str, Any], ref: dict[str, Any]) -> dict[str, Any]:
     """The declared differences between two signed manifests, on the dimensions
     the platform defines. Structured, never prose: the board renders chips from
@@ -214,6 +223,7 @@ def build_entry_self(
         "self_baseline": {
             "model": manifest_model(manifest),
             "generation": manifest_generation(manifest),
+            "seed_policy": manifest_seed_policy(manifest),
             "baseline_rounds": sb.get("baseline_rounds"),
             "calibrate_envelope": bool(sb.get("calibrate_envelope")),
         },

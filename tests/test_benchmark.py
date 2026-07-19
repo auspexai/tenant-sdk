@@ -764,6 +764,20 @@ def test_self_baseline_entry_carries_k_from_either_record_shape():
     assert nested["entry_kind"] == "self_baseline"
     assert nested["self_baseline"]["model"] == "qwen3-1.7b-q4"
     assert "sampling" in nested["self_baseline"]["generation"]  # temp=0.8 → sampling(…)
+    # seed_policy defaults to "fixed" (a DRIFT run) when the manifest doesn't declare it —
+    # the board reads this to keep DIVERSITY (per_round) runs off the drift scatter.
+    assert nested["self_baseline"]["seed_policy"] == "fixed"
+
+    # a per_round manifest tags the entry as a diversity run.
+    from auspexai_tenant.benchmark_entry import manifest_seed_policy
+
+    assert (
+        manifest_seed_policy(
+            {"inference_determinism": {"temperature": 0.8, "seed_policy": "per_round"}}
+        )
+        == "per_round"
+    )
+    assert manifest_seed_policy({}) == "fixed"
 
 
 def test_registry_entry_signs_and_verifies_and_tamper_fails():
