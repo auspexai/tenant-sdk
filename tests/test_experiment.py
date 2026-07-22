@@ -388,3 +388,31 @@ def test_collect_raw_content_empty_buffer() -> None:
         return httpx.Response(200, json={"raw": {}, "signatures": {}, "count": 0})
 
     assert _experiment(handler).collect_raw_content() == {}
+
+
+def test_driver_heartbeat_stamps_detached_run_id(monkeypatch, tmp_path) -> None:
+    """A detached driver (ENV_DRIVER_DIR set) stamps its run_id into the heartbeat so
+    the coordinator can tell it from a foreground driver; foreground (env unset) sends
+    none; an explicitly passed run_id always wins over the env-resolved one."""
+    from auspexai_tenant import driver_manager
+
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/driver-heartbeat"):
+            seen.append(_body(request))
+        return httpx.Response(200, json={})
+
+    # foreground: env unset → no run_id rides the heartbeat
+    monkeypatch.delenv(driver_manager.ENV_DRIVER_DIR, raising=False)
+    _experiment(handler).driver_heartbeat("driving", round=1)
+    assert "run_id" not in seen[-1]
+
+    # detached: ENV_DRIVER_DIR set → its dir name IS the run_id and rides along
+    monkeypatch.setenv(driver_manager.ENV_DRIVER_DIR, str(tmp_path / "base-20260721-1234-99"))
+    _experiment(handler).driver_heartbeat("driving", round=2)
+    assert seen[-1]["run_id"] == "base-20260721-1234-99"
+
+    # an explicit run_id always wins over the env-resolved one
+    _experiment(handler).driver_heartbeat("finalizing", reason="max_rounds", run_id="explicit-xyz")
+    assert seen[-1]["run_id"] == "explicit-xyz"

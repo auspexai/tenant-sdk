@@ -309,6 +309,17 @@ class Experiment:
             body["reason"] = reason[:500]
         if round is not None:
             body["round"] = round
+        if run_id is None:
+            # A detached driver knows its run_id from its process env; stamp it so the
+            # coordinator can tell a detached driver from a foreground one and surface
+            # the run-id for `experiment ps`/`stop`. Best-effort — a telemetry lookup
+            # must never disturb the run loop; foreground (env unset) resolves to None.
+            try:
+                from auspexai_tenant import driver_manager
+
+                run_id = driver_manager.current_run_id()
+            except Exception:
+                run_id = None
         if run_id is not None:
             body["run_id"] = run_id
         url = f"{self._base}/api/v0/experiments/{self.experiment_id}/driver-heartbeat"

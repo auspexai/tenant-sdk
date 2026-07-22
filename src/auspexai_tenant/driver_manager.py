@@ -178,6 +178,16 @@ def set_status(status: str) -> None:
         _write_meta(run_dir, meta)
 
 
+def current_run_id() -> str | None:
+    """This detached driver's run_id (its run-dir name), or None in the foreground.
+
+    The child runs with ENV_DRIVER_DIR = drivers_dir()/<run_id>, so the directory
+    name IS the run_id (see `spawn_detached`). Cheap and never raises — safe on the
+    heartbeat hot path; a foreground driver (env unset) legitimately has no run_id."""
+    d = os.environ.get(ENV_DRIVER_DIR)
+    return Path(d).name if d else None
+
+
 def list_drivers() -> list[DriverRecord]:
     """All ACTIVE driver records, newest first. `_`-prefixed directories (e.g.
     `_ended/`, the post-mortem archive) are reserved and skipped."""

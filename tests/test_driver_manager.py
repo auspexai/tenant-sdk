@@ -159,3 +159,15 @@ def test_stop_by_profile(drivers_home):
 
 def test_stop_unknown_target_errors(drivers_home):
     assert CliRunner().invoke(main, ["experiment", "stop", "nope"]).exit_code == 1
+
+
+def test_current_run_id_foreground_is_none(drivers_home):
+    # drivers_home unsets ENV_DRIVER_DIR → a foreground driver has no run_id
+    assert dm.current_run_id() is None
+
+
+def test_current_run_id_detached_is_dir_name(tmp_path, monkeypatch):
+    # the detached child runs with ENV_DRIVER_DIR = drivers_dir()/<run_id>, so the
+    # directory name IS the run_id
+    monkeypatch.setenv(dm.ENV_DRIVER_DIR, str(tmp_path / "myprofile-20260721-113031-4242"))
+    assert dm.current_run_id() == "myprofile-20260721-113031-4242"
