@@ -27,7 +27,8 @@ auspexai-tenant bundle table evidence.json -o results.csv      # or results.parq
 ```python
 # 3b. … or a verified pandas DataFrame, in one call
 from auspexai_tenant import evidence
-df = evidence.load_verified("evidence.json")   # raises unless the bundle verifies
+
+df = evidence.load_verified("evidence.json")  # raises unless the bundle verifies
 ```
 
 That's the whole loop: **export → verify → understand the columns → analyze.** The rest of this guide is detail.
@@ -79,6 +80,7 @@ This is the single biggest defense against guesswork: under AuspexAI's containme
 
 ```python
 from auspexai_tenant import evidence
+
 df = evidence.load_verified("evidence.json")
 ```
 One row per consensus result. Alongside your `output.*` feature columns and `input.*` work-unit columns, the frame carries:
@@ -119,7 +121,7 @@ ttr = df[df["output.lexical.type_token_ratio.valid"] != False]
 ```python
 # never pool rows produced by different served weights unless cross-model IS the question
 for digest, g in df.groupby("output.model.gguf_sha256"):
-    ...   # analyze each model build separately
+    ...  # analyze each model build separately
 ```
 
 **Recipe C — the Vigiles drift analysis (per-probe stability across rounds).**
@@ -135,8 +137,9 @@ To track drift *across* runs (e.g. weekly), export each run and join on the **ke
 ```python
 frames = [evidence.load_verified(f).assign(run=f) for f in ["wk1.json", "wk2.json", "wk3.json"]]
 series = pd.concat(frames)
-pivot = series.pivot_table(index="output.probe_id", columns="run",
-                           values="output.response_sha256", aggfunc="first")
+pivot = series.pivot_table(
+    index="output.probe_id", columns="run", values="output.response_sha256", aggfunc="first"
+)
 # a row whose hash changes column-to-column drifted between runs
 ```
 *(A first-class longitudinal multi-run timeline view is still planned. The recipe above is the manual version.)*
@@ -202,9 +205,10 @@ auspexai-tenant bundle table evidence.json -o results.csv     # flat table → y
 ```
 ```python
 from auspexai_tenant import evidence
-df = evidence.load_verified("evidence.json")          # verified frame  [needs analysis extra]
-df.attrs["feature_schema"]["output.<col>"]            # the column's meaning/role/change_means
-df[df["output.<col>.valid"] != False]                 # interpretable rows only
+
+df = evidence.load_verified("evidence.json")  # verified frame  [needs analysis extra]
+df.attrs["feature_schema"]["output.<col>"]  # the column's meaning/role/change_means
+df[df["output.<col>.valid"] != False]  # interpretable rows only
 ```
 
 **See also:** [`reading_your_evidence.md`](reading_your_evidence.md) — verification, corroboration (`integrity_basis`), the apparatus footprint, and citing the Rekor anchor. Read both: that guide tells you *how much to trust* each row; this one tells you *what each row means.*

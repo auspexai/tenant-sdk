@@ -24,7 +24,7 @@ or in code — the one call that gates everything:
 ```python
 from auspexai_tenant import evidence
 
-df = evidence.load_verified("evidence.json")   # raises if anything fails to verify
+df = evidence.load_verified("evidence.json")  # raises if anything fails to verify
 ```
 
 `verify_bundle` (run by all of the above) checks: the proof-of-transfer signature, external key pinning, the attestation block + Merkle-root unification, **completeness** (no rows dropped), **input binding** (each result ties to its work unit), **per-result worker signatures**, **tolerance evidence** (each tolerance-consensus unit's attested representative hash recomputes from the bundled evidence), and — for a pre-registered run — the **pre-registration binding** plus **`design ≺ data`** ordering and **deviation disclosure** (see the section below). **A DataFrame in hand is already trustworthy data** — if it didn't verify, you don't have it.
@@ -70,8 +70,8 @@ df = evidence.load_verified("evidence.json")   # raises if anything fails to ver
 4. **Correct for the apparatus footprint.** Treat it as a covariate to subtract, not noise to ignore — that is firewall #2's whole purpose: *"the network watched, and here is how much that mattered."*
 5. **Treat divergence as signal, not failure.** Under firewall #1 a worker that disagrees with quorum earns **equal trust** — divergence is never discarded. Since D19 (bundle schema v2), non-consensus payloads ride the bundle in a separate, basis-labeled section under the ANCHOR-OR-OMIT rule (a row ships only when its hash matches a signed artifact: an observation its own receipt, a diverged row the signed predicate, an outlier the tolerance block), so within the retention window they appear as REAL rows:
    ```python
-   diverged = df[df.integrity_basis == "diverged"]      # whole-unit disagreements
-   outliers = df[df.integrity_basis == "outlier"]       # outside the tolerance envelope
+   diverged = df[df.integrity_basis == "diverged"]  # whole-unit disagreements
+   outliers = df[df.integrity_basis == "outlier"]  # outside the tolerance envelope
    observations = df[df.integrity_basis == "observation"]  # observe-only extra replicas
    ```
    After the retention window (or on pre-D19 bundles) their payloads are gone and only the hash record remains: `df.attrs["diverged_units"]`. For guaranteed payload-level access, collect live with the observe-all driver (`include="raw"`), or run the study observe-only (`builtin_process_only`) — those replicas keep the full consensus-payload retention window.
