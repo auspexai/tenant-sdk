@@ -51,12 +51,22 @@ coordinator (`https://coord.auspexai.network`).
   installing the SDK there. Includes **`InferenceClient`** for
   LLM-inference tenants: chat against the model the worker serves over a
   sandbox-local socket, under the **generation policy your signed manifest
-  declares** (v0.2 M1). Greedy (temperature 0) is the default — byte-for-byte
-  deterministic, seed/num_predict/num_ctx whitelisted. Seeded sampling
-  (`temperature > 0` with a pinned `seed`, plus optional `top_p`/`top_k`/`min_p`
-  — manifest v0.5) is honored per-request by the worker; it requires a
-  non-agreement collection mode (process-only at replication 1), since sampled
-  replicas legitimately differ.
+  declares** (v0.2 M1). Greedy is the default: argmax, pinned as `top_k = 1`.
+  Seeded sampling (`temperature > 0` with a pinned `seed`) is honored
+  per-request by the worker; it requires a non-agreement collection mode
+  (process-only at replication 1), since sampled replicas legitimately differ.
+
+  **Manifest v0.7 — the chain is total.** Every inference request carries the
+  complete sampler chain, at manifest-declared or neutral values, so the serving
+  provider's own defaults never govern a run. An undeclared knob resolves
+  NEUTRAL, never to the provider's default. Declarable knobs: `top_p`, `top_k`,
+  `min_p`, `repeat_penalty`, `repeat_last_n` — in **both** modes. Note that
+  `temperature 0` alone does not select argmax on a llama.cpp-derived backend
+  (llama.cpp #9897 — the full chain runs and the most probable token entering
+  the temperature step is taken); `top_k 1` is what does, which is why greedy
+  sets it explicitly. The worker signs the chain it actually ran onto each
+  result, and the evidence footprint reports `declared` and `effective`
+  separately.
 - Static work-unit packing (`tar_writer`/`tar_reader`) and package-digest
   helpers that match the worker's verification byte-for-byte.
 
