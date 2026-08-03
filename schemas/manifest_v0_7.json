@@ -1,0 +1,685 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://auspexai.network/schemas/manifest/v0.7",
+  "title": "AuspexAI Tenant Manifest v0.7",
+  "description": "Published manifest schema for AuspexAI tenant experiments, v0.7. Mirrors the normative CDDL in cddl/manifest_v0_7.cddl. v0.7 is a superset of v0.6 making the generation policy TOTAL: every inference request carries the complete sampler chain at manifest-declared or neutral values, so the serving provider's own defaults never govern a run. Adds the penalty knobs repeat_penalty / repeat_last_n (whose provider defaults 1.1 / 64 were in force on every pre-v0.7 run while being declarable nowhere), admits the whitelist knobs under greedy as well as sampling (temperature 0 is not on its own argmax on a llama.cpp-derived backend since llama.cpp #9897 \u2014 top_k 1 is), and carries seed_policy, which the v0.6 model shipped but the immutable v0.6 schema artifact omitted.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "tenant_id",
+    "tenant_maintainer_contact",
+    "experiment_id",
+    "research_goal_paragraph",
+    "models",
+    "prompt_set_characteristics",
+    "sensitive_content_flags",
+    "expected_duration_hours",
+    "replication_factor",
+    "work_unit_source",
+    "executor",
+    "reducer"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "0.7"
+    },
+    "tenant_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{2,63}$",
+      "description": "Lowercase slug, 3-64 chars, starts with a letter."
+    },
+    "tenant_maintainer_contact": {
+      "type": "string",
+      "format": "email"
+    },
+    "experiment_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{2,127}$"
+    },
+    "research_goal_paragraph": {
+      "type": "string",
+      "minLength": 50,
+      "maxLength": 2000,
+      "description": "One-paragraph volunteer-readable research goal (Principles \u00a75.14)."
+    },
+    "research_class": {
+      "type": "string",
+      "enum": [
+        "behavioral_drift",
+        "eval_sweeps",
+        "refusal_boundary_mapping",
+        "cross_model_comparison",
+        "quantization_effects",
+        "prompt_sensitivity",
+        "other"
+      ],
+      "description": "\u00a79 #48: declared research class for class-by-tier auto-approval. Optional; omitted \u21d2 human review."
+    },
+    "models": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "version",
+          "local_weights_required"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "local_weights_required": {
+            "type": "boolean"
+          },
+          "hf_repo": {
+            "type": "string",
+            "description": "Optional HuggingFace repo (e.g. 'Org/Model-GGUF') for M3 lazy auto-acquire."
+          },
+          "hf_filename": {
+            "type": "string",
+            "description": "Optional exact file within hf_repo (the pinned GGUF quant) so consensus replicas run an identical quant."
+          },
+          "expected_gguf_sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "description": "v0.2 / M3 (#13b): the expected sha256 of the served GGUF weights. When set, the coordinator REJECTS a result whose worker-reported served digest differs \u2014 the declared model provably ran (\u00a711 amendment 2 / \u00a79 #48 cross-model performance unlock). Omit \u21d2 behavioral-only (status quo)."
+          }
+        }
+      }
+    },
+    "prompt_set_characteristics": {
+      "type": "string",
+      "minLength": 10,
+      "maxLength": 1000,
+      "description": "High-level description only, not the literal prompts (Principles \u00a75.14)."
+    },
+    "sensitive_content_flags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "dual_use",
+          "red_team",
+          "harmful_output_generation",
+          "raw_content_capture"
+        ]
+      },
+      "uniqueItems": true,
+      "description": "Per Principles \u00a75.12 research ethics. If any flag is set, approver_attestations is required."
+    },
+    "approver_attestations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "approver_pubkey",
+          "sig"
+        ],
+        "properties": {
+          "approver_pubkey": {
+            "type": "string",
+            "pattern": "^ed25519:[A-Za-z0-9+/=]+$"
+          },
+          "sig": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9+/=]+$"
+          }
+        }
+      }
+    },
+    "expected_duration_hours": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "maximum": 8760,
+      "description": "Expected wall-clock duration of the experiment, in hours."
+    },
+    "replication_factor": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+    },
+    "work_unit_source": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "tarball_sha256"
+          ],
+          "properties": {
+            "kind": {
+              "const": "static"
+            },
+            "tarball_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "url"
+          ],
+          "properties": {
+            "kind": {
+              "const": "http"
+            },
+            "url": {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https://"
+            }
+          }
+        }
+      ]
+    },
+    "executor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "command"
+      ],
+      "properties": {
+        "command": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "image_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "package_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "reducer": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "builtin_hash_agreement"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "builtin_within_cell_tolerance"
+            },
+            "tolerance_features": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "command"
+          ],
+          "properties": {
+            "kind": {
+              "const": "custom"
+            },
+            "command": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string"
+              }
+            },
+            "image_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "C17 observe-only: every replica an independent observation; no agreement claimed; basis process_only at ANY replica count.",
+          "properties": {
+            "kind": {
+              "const": "builtin_process_only"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "requires_real_execution": {
+      "type": "boolean",
+      "description": "v0.2 / M2: declare that units run real code (vs a synthetic harness), so the scheduler keeps them off synthetic/echo workers even when no local weights are required. Default false."
+    },
+    "inference_determinism": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "v0.7: the generation policy, resolved into a COMPLETE sampler chain. greedy (temperature 0 / omitted) is argmax, pinned as top_k 1 over a neutral chain; seeded-sampling (temperature > 0) requires a pinned seed. Any declared knob overrides its neutral value; an undeclared knob resolves to neutral, NEVER to the serving provider's default. Knobs are declarable in both modes.",
+      "properties": {
+        "temperature": {
+          "type": "number",
+          "minimum": 0
+        },
+        "seed": {
+          "type": "integer"
+        },
+        "serving_version_pin": {
+          "type": "string",
+          "description": "e.g. 'ollama/0.17.7' \u2014 the worker must serve a matching version or refuse."
+        },
+        "hardware_class": {
+          "type": "string",
+          "description": "e.g. 'cpu' | 'cuda'."
+        },
+        "top_p": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "description": "v0.5 sampling knob (whitelist; declarable under greedy too as of v0.7)."
+        },
+        "top_k": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "v0.5 sampling knob (whitelist; declarable under greedy too as of v0.7)."
+        },
+        "min_p": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMaximum": 1,
+          "description": "v0.5 sampling knob (whitelist; declarable under greedy too as of v0.7)."
+        },
+        "seed_policy": {
+          "type": "string",
+          "enum": [
+            "fixed",
+            "per_round"
+          ],
+          "default": "fixed",
+          "description": "v0.6 seed-stream policy; only meaningful under temperature > 0."
+        },
+        "repeat_penalty": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "v0.7 penalty knob. Neutral is 1.0. The one chain member with feedback: it rewrites logits from tokens already emitted."
+        },
+        "repeat_last_n": {
+          "type": "integer",
+          "minimum": -1,
+          "description": "v0.7 penalty knob: penalty window in tokens. Neutral is 0 (disabled); -1 means the full context."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "temperature": {
+                "exclusiveMinimum": 0
+              }
+            },
+            "required": [
+              "temperature"
+            ]
+          },
+          "then": {
+            "required": [
+              "seed"
+            ]
+          },
+          "$comment": "seeded sampling requires a pinned seed (reproducibility floor)."
+        }
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "measurement_level"
+      ],
+      "description": "v0.2 / M4: the declared measurement type of a unit's result, so the SDK loader + dashboard type results instead of guessing (Stevens typology).",
+      "properties": {
+        "measurement_level": {
+          "type": "string",
+          "enum": [
+            "nominal",
+            "ordinal",
+            "interval",
+            "ratio"
+          ]
+        },
+        "shape": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "description": "[] scalar \u00b7 [N] vector \u00b7 [R,C] matrix."
+        },
+        "dtype": {
+          "type": "string",
+          "description": "e.g. 'float32' | 'int' | 'string'."
+        }
+      }
+    },
+    "feature_schema": {
+      "type": "object",
+      "description": "v0.3 / D16.1: the self-describing feature schema, keyed by the dotted result-payload path the executor emits (e.g. 'lexical.type_token_ratio'; load_verified prefixes the column with 'output.'). Each value declares the feature's meaning, \u00a77-safe type + bounds, what a change implies, role (feature authority), and how replicas are compared (the C7 tolerance envelope). There is NO free-text kind \u2014 a string is a closed `categorical` or a `hash` (the \u00a77 no-raw-text guarantee). The per-kind required-bounds rules are enforced by the SDK model + the coordinator; this schema mirrors the structure.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "meaning",
+          "kind",
+          "role",
+          "change_means"
+        ],
+        "properties": {
+          "meaning": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "hash",
+              "count",
+              "numeric",
+              "categorical",
+              "ordinal",
+              "set"
+            ]
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "anchor",
+              "summary",
+              "provenance",
+              "key",
+              "diagnostic"
+            ]
+          },
+          "change_means": {
+            "type": "string",
+            "minLength": 1
+          },
+          "unit": {
+            "type": "string"
+          },
+          "range": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "min"
+            ],
+            "properties": {
+              "min": {
+                "type": "number"
+              },
+              "max": {
+                "type": "number"
+              }
+            }
+          },
+          "categories": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            }
+          },
+          "algorithm": {
+            "type": "string"
+          },
+          "element_kind": {
+            "type": "string",
+            "enum": [
+              "categorical",
+              "numeric",
+              "count",
+              "hash"
+            ]
+          },
+          "max_cardinality": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "invariant_to": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "valid_when": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "field",
+              "op",
+              "value"
+            ],
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "op": {
+                "type": "string",
+                "enum": [
+                  ">=",
+                  "<=",
+                  ">",
+                  "<",
+                  "==",
+                  "!="
+                ]
+              },
+              "value": {
+                "type": [
+                  "number",
+                  "string"
+                ]
+              }
+            }
+          },
+          "comparison": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "rule"
+            ],
+            "properties": {
+              "rule": {
+                "type": "string",
+                "enum": [
+                  "exact",
+                  "numeric",
+                  "set_jaccard",
+                  "categorical_exact"
+                ]
+              },
+              "rel": {
+                "type": "number"
+              },
+              "abs": {
+                "type": "number"
+              },
+              "min": {
+                "type": "number"
+              }
+            }
+          }
+        }
+      }
+    },
+    "pre_registration": {
+      "type": "object",
+      "description": "v0.4 / D16.2: the pre-registered design \u2014 hypothesis, analysis, and decision rule declared BEFORE data exists. `features` NAMES declared feature_schema paths; the pre-registered comparison envelope IS each feature's `comparison` in this same signed manifest (referenced, never duplicated). \u00a77-safe: describes the design over declared features, never raw output. A post-hoc analysis change is a signed, append-only deviation record, never an edit.",
+      "additionalProperties": false,
+      "required": [
+        "hypothesis",
+        "analysis_method",
+        "features",
+        "timescale",
+        "decision_rule",
+        "expected_result",
+        "stopping_rule"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "const": "0.1",
+          "default": "0.1"
+        },
+        "hypothesis": {
+          "type": "string",
+          "minLength": 20,
+          "maxLength": 2000
+        },
+        "analysis_method": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 2000
+        },
+        "features": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "description": "dotted feature_schema paths the analysis reads; each must be declared and carry a 'comparison'"
+        },
+        "timescale": {
+          "type": "string",
+          "enum": [
+            "intra_experiment_rounds",
+            "long_horizon",
+            "inter_experiment"
+          ]
+        },
+        "decision_rule": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 2000
+        },
+        "expected_result": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 2000
+        },
+        "stopping_rule": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 1000,
+          "description": "declared up front so stopping is never data-peeking-dependent"
+        },
+        "comparison_keys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "stable join keys (esp. inter-experiment drift series); must be declared features"
+        },
+        "min_replication": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "optional power declaration: minimum corroboration for the claim"
+        }
+      }
+    },
+    "config_provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "D17: HOW this experiment was configured \u2014 SDK-stamped at experiment build, never hand-written. Descriptive, not enforced.",
+      "properties": {
+        "profile": {
+          "type": "string",
+          "description": "the active [profiles.<name>]; absent = base"
+        },
+        "resolved_config_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "sha256 over the canonical JSON of the RESOLVED (post-profile-merge) config"
+        },
+        "git_commit": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{7,40}$"
+        },
+        "git_dirty": {
+          "type": "boolean",
+          "description": "built from an uncommitted tree (the honesty bit)"
+        }
+      },
+      "required": [
+        "resolved_config_sha256"
+      ]
+    },
+    "capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "D20 raw-content capture opt-in (ratified 2026-07-06). Optional; capture.raw=true makes the executor emit raw_response, requires 'raw_content_capture' in sensitive_content_flags (\u2192 per-experiment review), and enables live R3 collection.",
+      "properties": {
+        "raw": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "sensitive_content_flags": {
+            "type": "array",
+            "minItems": 1
+          }
+        },
+        "required": [
+          "sensitive_content_flags"
+        ]
+      },
+      "then": {
+        "required": [
+          "approver_attestations"
+        ],
+        "properties": {
+          "approver_attestations": {
+            "type": "array",
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ]
+}

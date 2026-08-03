@@ -79,22 +79,85 @@ class Model(BaseModel):
     expected_gguf_sha256: Annotated[str | None, Field(pattern=r"^[a-f0-9]{64}$")] = None
 
 
+# v0_7: the complete sampler chain, at the values that make each member a no-op.
+# Every inference request carries every one of these keys so the serving
+# provider's own defaults can never govern a run — they are version-dependent
+# (Ollama's `DefaultOptions` differ across releases), invisible to the manifest,
+# and absent from the evidence bundle, which is exactly the gap that let a
+# `greedy` footprint describe a run the backend never performed.
+#
+# `top_k: 0` disables the truncation entirely; argmax is `top_k: 1`, applied by
+# `InferenceDeterminism.effective_generation_options` under greedy. Keys are the
+# Ollama option names, which are also llama.cpp's sampler names.
+GENERATION_CHAIN_NEUTRAL: dict[str, float | int] = {
+    "top_k": 0,
+    "top_p": 1.0,
+    "min_p": 0.0,
+    "typical_p": 1.0,
+    "repeat_penalty": 1.0,
+    "repeat_last_n": 0,
+    "presence_penalty": 0.0,
+    "frequency_penalty": 0.0,
+    "mirostat": 0,
+}
+
+# The DECLARABLE subset. Deliberately smaller than the chain: a tenant may pin
+# the members with research value, while the rest are held neutral rather than
+# left to the provider. Enumerated, never open-ended (declarative-enforcement
+# hygiene, memo §3a).
+DECLARABLE_CHAIN_KNOBS: tuple[str, ...] = (
+    "top_p",
+    "top_k",
+    "min_p",
+    "repeat_penalty",
+    "repeat_last_n",
+)
+
+
+def default_generation_options() -> dict[str, float | int]:
+    """The chain for a manifest with no `inference_determinism` block — greedy
+    argmax over the neutral chain, seeded by the worker's own default."""
+    return InferenceDeterminism().effective_generation_options()
+
+
 class InferenceDeterminism(BaseModel):
     """v0_2 / M1: the generation policy for a consensus inference run. Two modes,
     keyed on the declared temperature (inference_determinism_scoping_memo §3a):
 
-    - **greedy** — `temperature == 0` (or the block omitted): byte-for-byte
-      deterministic decoding. The default; every pre-v0.5 manifest is this.
+    - **greedy** — `temperature == 0` (or the block omitted): argmax decoding,
+      pinned as `top_k = 1` over a neutral chain. The default.
     - **seeded-sampling** — `temperature > 0` with a **pinned `seed`** (required:
       unseeded sampling is refused — the reproducibility floor, §5). The optional
-      sampling knobs `top_p`/`top_k`/`min_p` (v0.5, ratified Q2) are a fixed,
-      explicitly-enumerated whitelist; the worker's broker honors the declared
-      values per-request and rejects anything beyond them.
+      sampling knobs are a fixed, explicitly-enumerated whitelist; the worker's
+      broker honors the declared values per-request and rejects anything beyond
+      them.
+
+    **v0_7 — the chain is TOTAL.** Every request carries every key in
+    `GENERATION_CHAIN_NEUTRAL`, declared or not. Before v0_7 the worker sent only
+    `temperature`/`seed`/`num_predict` and the serving provider's own defaults
+    governed the rest of the sampler chain (Ollama 0.30-0.32: `top_k 40`,
+    `top_p 0.9`, `repeat_penalty 1.1` over a 64-token window). Those defaults were
+    version-dependent, appeared in no manifest, and were recorded in no evidence
+    bundle — so a `greedy` footprint named a decoding mode the backend did not run.
+    Two things follow, and both are deliberate:
+
+    - `temperature == 0` is NOT on its own greedy decoding on a llama.cpp-derived
+      backend. Since llama.cpp #9897 a temperature of 0 runs the full sampler
+      chain and takes the most probable token entering the temperature step, which
+      is the raw argmax only when the rest of the chain is neutral. `top_k = 1` is
+      what actually pins argmax, so that is what this class emits.
+    - An undeclared knob resolves to its NEUTRAL value, never to the provider's
+      default. The manifest fully determines generation; nothing leaks in from the
+      serving stack.
+
+    Knobs are declarable under greedy as well as sampling (v0_7). The pre-v0_7
+    rejection rested on "greedy decoding never reads them", which the chain
+    semantics above falsify.
 
     The worker enforces the declaration (never a constant), and when
     `serving_version_pin` is set hard-refuses a unit whose serving stack is
     outside the pin (the refusal is retryable → re-offered to an eligible
-    worker). Omit the block ⇒ worker defaults (greedy)."""
+    worker). Omit the block ⇒ greedy over the neutral chain."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -102,12 +165,20 @@ class InferenceDeterminism(BaseModel):
     seed: int | None = None
     serving_version_pin: str | None = None  # e.g. "ollama/0.17.7"
     hardware_class: str | None = None  # e.g. "cpu" | "cuda"
-    # v0_5: the seeded-sampling whitelist (memo Q2). Only meaningful under
-    # sampling — declaring a knob at temperature 0 is rejected (an unread
-    # declaration is the declarative-enforcement bug class).
+    # v0_5: the sampling whitelist (memo Q2). v0_7: declarable under greedy too —
+    # they are read in both modes, so refusing them at temperature 0 refused a
+    # legitimate declaration and left the provider's value in force instead.
     top_p: Annotated[float | None, Field(gt=0, le=1)] = None
     top_k: Annotated[int | None, Field(ge=1)] = None
     min_p: Annotated[float | None, Field(ge=0, lt=1)] = None
+    # v0_7: the two penalty knobs. Added because the provider's defaults for them
+    # (`repeat_penalty 1.1` / `repeat_last_n 64`) were in force on every run ever
+    # executed while being declarable nowhere. `repeat_penalty` is the one chain
+    # member with feedback: it rewrites logits from the tokens already emitted, so
+    # a single flipped token changes the penalty window and the divergence
+    # compounds instead of staying local.
+    repeat_penalty: Annotated[float | None, Field(gt=0)] = None
+    repeat_last_n: Annotated[int | None, Field(ge=-1)] = None
     # v0_6 (diversity_seed_stream_design.md §3): the seed STREAM policy. "fixed" = one
     # constant seed across all rounds (the reproducibility default — a probe's output is
     # reproducible round-to-round, so drift is the signal). "per_round" = a declared,
@@ -127,17 +198,46 @@ class InferenceDeterminism(BaseModel):
         """The declared v0.5 sampling knobs, by name (empty when none declared)."""
         return {k: v for k in ("top_p", "top_k", "min_p") if (v := getattr(self, k)) is not None}
 
+    @property
+    def penalty_knobs(self) -> dict[str, float | int]:
+        """The declared v0.7 penalty knobs, by name (empty when none declared)."""
+        return {
+            k: v for k in ("repeat_penalty", "repeat_last_n") if (v := getattr(self, k)) is not None
+        }
+
+    @property
+    def declared_knobs(self) -> dict[str, float | int]:
+        """Every declared chain knob — what overrides the neutral value."""
+        return {**self.sampling_knobs, **self.penalty_knobs}
+
+    def effective_generation_options(self) -> dict[str, float | int]:
+        """The COMPLETE sampler chain this policy runs (v0_7).
+
+        The single source of truth for what actually reaches the backend. The
+        worker's broker emits exactly this on every request and the coordinator
+        mirrors it into the evidence footprint, so "declared" and "actual" are
+        the same object rather than two descriptions that can drift apart.
+
+        Resolution order: neutral chain → argmax pin under greedy → declared
+        knobs. `temperature` and `seed` ride along so the returned dict is the
+        whole generation policy, not the part of it that happens to be new."""
+        options: dict[str, float | int] = dict(GENERATION_CHAIN_NEUTRAL)
+        if not self.is_sampling:
+            # Argmax, pinned explicitly. Temperature 0 alone does not select it
+            # on a llama.cpp-derived backend (see the class docstring).
+            options["top_k"] = 1
+        options.update(self.declared_knobs)
+        options["temperature"] = self.temperature
+        if self.seed is not None:
+            options["seed"] = self.seed
+        return options
+
     @model_validator(mode="after")
     def _sampling_coherence(self) -> InferenceDeterminism:
         if self.is_sampling and self.seed is None:
             raise ValueError(
                 "seeded sampling (temperature > 0) requires a pinned 'seed' — "
                 "unseeded sampling is not accepted (reproducibility floor)"
-            )
-        if not self.is_sampling and self.sampling_knobs:
-            raise ValueError(
-                f"sampling knobs {sorted(self.sampling_knobs)} require temperature > 0 "
-                "(greedy decoding never reads them — declare them only under sampling)"
             )
         if self.seed_policy == "per_round" and not self.is_sampling:
             raise ValueError(
@@ -525,7 +625,7 @@ class Manifest(BaseModel):
     # Every superset member is OPTIONAL — enforcement keys on PRESENCE, so a
     # manifest declaring none of a version's members is structurally the prior
     # version with schema_version bumped.
-    schema_version: Literal["0.1", "0.2", "0.3", "0.4", "0.5", "0.6"]
+    schema_version: Literal["0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7"]
     tenant_id: Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]{2,63}$")]
     tenant_maintainer_contact: EmailStr
     experiment_id: Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]{2,127}$")]
@@ -648,6 +748,41 @@ class Manifest(BaseModel):
             raise ValueError(
                 'config_provenance requires schema_version "0.6" or later (the '
                 "published v0.1-v0.5 schemas are immutable and do not carry it)"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _v0_7_members_require_v0_7(self) -> Manifest:
+        """The penalty knobs, and knobs under greedy, are v0.7 contract
+        extensions. Blacklist form, like the members before them.
+
+        The second rule is the interesting one. Pre-v0.7 a knob at temperature 0
+        was refused outright on the grounds that greedy decoding never reads it;
+        v0.7 admits it, because it does. Older contracts keep the old rule rather
+        than silently acquiring the new declarable surface.
+
+        Scope note: this gates what a manifest may DECLARE. Chain TOTALITY is not
+        version-keyed — the worker resolves the complete chain for every manifest
+        at every version, because sending an incomplete chain was an enforcement
+        defect rather than a contract term, and keying it on the version would
+        mean maintaining two sampler regimes indefinitely. A pre-v0.7 manifest
+        therefore keeps its declared meaning and gains a correct enforcement of
+        it, which does change generated bytes versus its pre-v0.7 runs."""
+        det = self.inference_determinism
+        if det is None:
+            return self
+        pre_v0_7 = self.schema_version in ("0.1", "0.2", "0.3", "0.4", "0.5", "0.6")
+        if pre_v0_7 and det.penalty_knobs:
+            raise ValueError(
+                f"penalty knobs {sorted(det.penalty_knobs)} require schema_version "
+                '"0.7" or later (the published v0.1-v0.6 schemas are immutable and '
+                "do not carry them)"
+            )
+        if pre_v0_7 and det.sampling_knobs and not det.is_sampling:
+            raise ValueError(
+                f"sampling knobs {sorted(det.sampling_knobs)} at temperature 0 require "
+                'schema_version "0.7" or later — before v0.7 a knob was declarable only '
+                "under sampling (temperature > 0)"
             )
         return self
 

@@ -45,9 +45,14 @@ def test_sampling_with_seed_valid():
     assert det.sampling_knobs == {"top_p": 0.9, "top_k": 40, "min_p": 0.05}
 
 
-def test_knobs_require_sampling():
-    with pytest.raises(ValidationError, match="require temperature > 0"):
-        InferenceDeterminism(temperature=0.0, top_p=0.9)
+def test_knobs_at_greedy_allowed_from_v0_7():
+    """v0.7 reversal: a knob at temperature 0 was refused pre-v0.7 on the grounds
+    that greedy never read it. The chain reads it in both modes, so the block
+    itself now accepts it; the version gate lives on Manifest (test_manifest_v0_7)."""
+    det = InferenceDeterminism(temperature=0.0, top_p=0.9)
+    assert not det.is_sampling
+    assert det.sampling_knobs == {"top_p": 0.9}
+    assert det.effective_generation_options()["top_p"] == 0.9
 
 
 def test_negative_temperature_rejected():
@@ -192,7 +197,7 @@ def test_build_maps_sampling_knobs():
         reducer={"kind": "custom", "command": ["python", "fold.py"]},
     )
     m = manifest_dict_from_config(cfg, package_sha256="ab" * 32, label="lab-s")
-    assert m["schema_version"] == "0.6"
+    assert m["schema_version"] == "0.7"
     assert m["inference_determinism"] == {
         "temperature": 0.7,
         "seed": 7,
@@ -205,5 +210,5 @@ def test_build_maps_sampling_knobs():
 def test_build_greedy_determinism_maps():
     cfg = _cfg(_BASE_EXP, determinism={"temperature": 0.0, "seed": 7})
     m = manifest_dict_from_config(cfg, package_sha256="ab" * 32, label="lab-g")
-    assert m["schema_version"] == "0.6"
+    assert m["schema_version"] == "0.7"
     Manifest.model_validate(m)

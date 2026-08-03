@@ -422,6 +422,10 @@ def manifest_dict_from_config(
                 "top_k",
                 "min_p",
                 "seed_policy",
+                # v0_7 penalty knobs. Declarable under greedy as well as
+                # sampling — the chain reads them in both modes.
+                "repeat_penalty",
+                "repeat_last_n",
             )
             if det.get(k) is not None
         }
@@ -468,9 +472,11 @@ def manifest_dict_from_config(
     manifest["config_provenance"] = _config_provenance(cfg)
 
     # schema_version bumps to the lowest version that covers the declared
-    # members. Provenance stamping (above) floors every BUILT manifest at 0.6;
-    # hand-written manifests at older versions stay valid forever (the model).
-    manifest["schema_version"] = "0.6"
+    # members. Provenance stamping (above) floors every BUILT manifest at 0.6,
+    # and the v0.7 generation contract floors it again at 0.7 so the evidence
+    # footprint states plainly which contract a run was built under; hand-written
+    # manifests at older versions stay valid forever (the model).
+    manifest["schema_version"] = "0.7"
     return manifest
 
 

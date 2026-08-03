@@ -138,7 +138,7 @@ def test_json_schema_mirror_rejects_unknown_member() -> None:
 def test_build_maps_pre_registration_and_bumps_to_0_4() -> None:
     cfg = _cfg(_BASE_EXP, feature_schema=VIGILES_FEATURE_SCHEMA, pre_registration=dict(PRE_REG))
     m = manifest_dict_from_config(cfg, package_sha256="ab" * 32, label="lab-pr")
-    assert m["schema_version"] == "0.6"
+    assert m["schema_version"] == "0.7"
     assert m["pre_registration"]["timescale"] == "intra_experiment_rounds"
     Manifest.model_validate(m)  # the built 0.4 manifest is valid end-to-end
 
@@ -146,5 +146,5 @@ def test_build_maps_pre_registration_and_bumps_to_0_4() -> None:
 def test_build_feature_schema_alone_maps() -> None:
     cfg = _cfg(_BASE_EXP, feature_schema=VIGILES_FEATURE_SCHEMA)
     m = manifest_dict_from_config(cfg, package_sha256="ab" * 32, label="lab-fs")
-    assert m["schema_version"] == "0.6"
+    assert m["schema_version"] == "0.7"
     assert "pre_registration" not in m

@@ -114,7 +114,7 @@ def _cfg(**overrides) -> ExperimentConfig:
 
 def test_build_always_stamps_provenance_and_floors_at_0_6():
     m = manifest_dict_from_config(_cfg(), package_sha256="ab" * 32, label="lab-p")
-    assert m["schema_version"] == "0.6"
+    assert m["schema_version"] == "0.7"
     prov = m["config_provenance"]
     assert len(prov["resolved_config_sha256"]) == 64
     assert "git_commit" not in prov  # no source_path → no git fields
