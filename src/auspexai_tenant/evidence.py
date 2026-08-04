@@ -318,7 +318,16 @@ def verify_additional_results(
                 # content minus the one field the bug dropped.
                 legacy = hashlib.sha256(_canonical_result_bytes({**r, "ran_under": ""})).hexdigest()
                 if legacy not in anchors:
-                    return False
+                    # v0.7 anchor-bug window (v3 go-live → the fix): the
+                    # coordinator computed v3 anchors WITHOUT generation_options
+                    # — the same omission shape as the ran_under bug above, found
+                    # the same way. Immutable COSE, so accept the chain-less
+                    # variant for those receipts.
+                    chainless = hashlib.sha256(
+                        _canonical_result_bytes({**r, "generation_options": []})
+                    ).hexdigest()
+                    if chainless not in anchors:
+                        return False
         else:
             return False  # unknown basis — never silently accept
     return True
@@ -374,9 +383,15 @@ def _canonical_result_bytes(r: dict[str, Any]) -> bytes:
     """The worker daemon's canonical signing input (signing/result.py) —
     reproduced byte-for-byte from bundle fields. A v1 result (§9 #13a)
     additionally binds `schema_version` + `served_weights`, and a v2 result
-    (A2 #32) additionally binds `ran_under` (the sandbox policy), so verifying the
-    worker signature also verifies those (a tampered digest or containment claim
-    fails the signature). v0/v1 reconstruction stays byte-identical."""
+    (A2 #32) additionally binds `ran_under` (the sandbox policy), and a v3 result
+    (v0.7) additionally binds `generation_options` — the sampler chain the worker
+    actually ran — so verifying the worker signature also verifies those (a
+    tampered digest, containment claim or generation parameter fails the
+    signature). v0/v1/v2 reconstruction stays byte-identical.
+
+    THIS IS THE THIRD COPY of the worker's canonical body (worker signer →
+    coordinator verifier → here). All three must move together; v3 shipped to the
+    first two only, which made every v3 bundle report 0 verified / N FAILED."""
     body = {
         "unit_id": r["unit_id"],
         "worker_pubkey": r["worker_pubkey_hex"].lower(),
@@ -392,6 +407,8 @@ def _canonical_result_bytes(r: dict[str, Any]) -> bytes:
         }
     if schema_version and int(schema_version) >= 2:
         body["ran_under"] = str(r.get("ran_under") or "").lower()
+    if schema_version and int(schema_version) >= 3:
+        body["generation_options"] = [dict(o) for o in (r.get("generation_options") or [])]
     return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
